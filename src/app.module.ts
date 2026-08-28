@@ -7,6 +7,7 @@ import { AppService } from './app.service';
 import { validate } from './config/env.schema';
 import { PrismaModule } from './prisma/prisma.module';
 import { BotModule } from './modules/bot/bot.module';
+import { SettingsModule } from './modules/settings/settings.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { BotModule } from './modules/bot/bot.module';
       },
     ]),
     PrismaModule,
+    SettingsModule,
     BotModule,
   ],
   controllers: [AppController],

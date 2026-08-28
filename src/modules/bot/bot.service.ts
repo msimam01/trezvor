@@ -7,11 +7,11 @@ import {
   BotCallbackAmount, 
   BotSessionStep,
   AMOUNT_NAIRA_MAP,
-  CHAIN_DISPLAY_NAMES,
-  PLATFORM_FEE_PERCENTAGE
+  CHAIN_DISPLAY_NAMES
 } from './bot.constants';
 import { UsersService } from '../users/users.service';
 import { OrdersService } from '../orders/orders.service';
+import { SettingsService } from '../settings/settings.service';
 import { validateWalletAddress, getValidationErrorMessage, ChainType } from './helpers/wallet-validator';
 
 interface BotSessionData {
@@ -34,6 +34,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly configService: ConfigService,
     private readonly usersService: UsersService,
     private readonly ordersService: OrdersService,
+    private readonly settingsService: SettingsService,
   ) {
     this.botToken = this.configService.get<string>('TELEGRAM_BOT_TOKEN') || '';
     if (!this.botToken) {
@@ -80,6 +81,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.callbackQuery(BotCallbackAmount.AMT_1000, this.handleAmountSelection.bind(this));
     this.bot.callbackQuery(BotCallbackAmount.AMT_2500, this.handleAmountSelection.bind(this));
     this.bot.callbackQuery(BotCallbackAmount.AMT_5000, this.handleAmountSelection.bind(this));
+    this.bot.callbackQuery(BotCallbackAmount.AMT_CUSTOM, this.handleCustomAmount.bind(this));
 
     // Message handler for wallet address
     this.bot.on('message:text', this.handleTextMessage.bind(this));
@@ -150,12 +152,30 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       ctx.session.selectedChain = null;
       ctx.session.selectedAmountNaira = null;
 
-      const keyboard = new InlineKeyboard()
-        .text(CHAIN_DISPLAY_NAMES[BotCallbackChain.CHAIN_SOLANA], BotCallbackChain.CHAIN_SOLANA)
-        .text(CHAIN_DISPLAY_NAMES[BotCallbackChain.CHAIN_BASE], BotCallbackChain.CHAIN_BASE)
-        .text(CHAIN_DISPLAY_NAMES[BotCallbackChain.CHAIN_TON], BotCallbackChain.CHAIN_TON)
-        .row()
-        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+      // Get enabled chains dynamically
+      const enabledChains = await this.settingsService.getAllEnabledChains();
+      
+      // Build keyboard with only enabled chains
+      const keyboard = new InlineKeyboard();
+      
+      // Map supported chains to callback chains
+      const chainMapping: Record<string, BotCallbackChain> = {
+        'SOLANA': BotCallbackChain.CHAIN_SOLANA,
+        'BASE': BotCallbackChain.CHAIN_BASE,
+        'TON': BotCallbackChain.CHAIN_TON,
+      };
+      
+      enabledChains.forEach((chain, index) => {
+        const chainCallback = chainMapping[chain];
+        if (chainCallback) {
+          keyboard.text(CHAIN_DISPLAY_NAMES[chainCallback], chainCallback);
+          if ((index + 1) % 3 === 0 || index === enabledChains.length - 1) {
+            keyboard.row();
+          }
+        }
+      });
+      
+      keyboard.text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
       await ctx.editMessageText('Select the blockchain network:', { reply_markup: keyboard });
       await ctx.answerCallbackQuery();
@@ -229,6 +249,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         .text('₦2,500', BotCallbackAmount.AMT_2500)
         .text('₦5,000', BotCallbackAmount.AMT_5000)
         .row()
+        .text('✍️ Custom Amount', BotCallbackAmount.AMT_CUSTOM)
+        .row()
         .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
         .text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
@@ -256,6 +278,18 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      // Validate against minimum amount for selected chain
+      const chain = ctx.session.selectedChain;
+      if (chain) {
+        const chainConfig = await this.settingsService.getChainConfig(chain as any);
+        if (amount < chainConfig.minAmountNaira) {
+          await ctx.answerCallbackQuery({ 
+            text: `Minimum order for ${chain} is ₦${chainConfig.minAmountNaira}` 
+          });
+          return;
+        }
+      }
+
       ctx.session.selectedAmountNaira = amount;
       ctx.session.step = BotSessionStep.AWAITING_WALLET;
 
@@ -273,19 +307,56 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async handleCustomAmount(ctx: BotContext) {
+    try {
+      const chain = ctx.session.selectedChain;
+      if (!chain) {
+        await ctx.answerCallbackQuery({ text: 'Please select a chain first' });
+        return;
+      }
+
+      // Get chain config for minimum amount
+      const chainConfig = await this.settingsService.getChainConfig(chain as any);
+      
+      ctx.session.step = BotSessionStep.AWAITING_CUSTOM_AMOUNT;
+
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      await ctx.editMessageText(
+        `Enter custom Naira amount (Minimum for ${chain} is ₦${chainConfig.minAmountNaira}):`,
+        { reply_markup: keyboard }
+      );
+      await ctx.answerCallbackQuery();
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in custom amount handler: ${err.message}`, err.stack);
+      await ctx.answerCallbackQuery({ text: 'Error processing request' });
+    }
+  }
+
   private async handleTextMessage(ctx: BotContext) {
     try {
-      // Only process if we're awaiting wallet address
+      if (!ctx.message?.text) {
+        await ctx.reply('Please provide valid input.');
+        return;
+      }
+
+      const text = ctx.message.text.trim();
+
+      // Handle custom amount input
+      if (ctx.session.step === BotSessionStep.AWAITING_CUSTOM_AMOUNT) {
+        await this.handleCustomAmountInput(ctx, text);
+        return;
+      }
+
+      // Only process wallet address if we're awaiting wallet address
       if (ctx.session.step !== BotSessionStep.AWAITING_WALLET) {
         return;
       }
 
-      if (!ctx.message?.text) {
-        await ctx.reply('Please provide a valid wallet address.');
-        return;
-      }
-
-      const walletAddress = ctx.message.text.trim();
+      const walletAddress = text;
       const chain = ctx.session.selectedChain;
 
       // Validate wallet address based on chain
@@ -299,14 +370,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      // Calculate fees
+      // Calculate fees using dynamic rate
       const fiatAmount = ctx.session.selectedAmountNaira;
       if (!fiatAmount) {
         await ctx.reply('Invalid amount. Please start over with /start');
         return;
       }
 
-      const feeNaira = fiatAmount * PLATFORM_FEE_PERCENTAGE;
+      const platformFeePercent = await this.settingsService.getGlobalFeePercent();
+      const feeNaira = fiatAmount * (platformFeePercent / 100);
       const totalAmount = fiatAmount + feeNaira;
 
       // Reset session but keep userId for potential future use
@@ -336,14 +408,14 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       // Store order ID in session for payment processing
       ctx.session.lastOrderId = order.id;
 
-      // Send order summary
+      // Send order summary with dynamic fee percentage
       const summary =
         `✅ Order Created Successfully!\n\n` +
         `📋 Order Details:\n` +
         `━━━━━━━━━━━━━━━━━━\n` +
         `🔗 Chain: ${chain}\n` +
         `💰 Gas Amount: ₦${fiatAmount.toLocaleString()}\n` +
-        `💳 Platform Fee: ₦${feeNaira.toLocaleString()} (15%)\n` +
+        `💳 Platform Fee: ₦${feeNaira.toLocaleString()} (${platformFeePercent}%)\n` +
         `💵 Total: ₦${totalAmount.toLocaleString()}\n` +
         `👛 Wallet: ${walletAddress.substring(0, 8)}...${walletAddress.substring(walletAddress.length - 4)}\n` +
         `📝 Order ID: ${order.id.substring(0, 8)}...\n\n` +
@@ -359,6 +431,59 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const err = error as Error;
       this.logger.error(`Error in text message handler: ${err.message}`, err.stack);
       await ctx.reply('Sorry, something went wrong. Please try again starting with /start');
+    }
+  }
+
+  private async handleCustomAmountInput(ctx: BotContext, text: string) {
+    try {
+      const chain = ctx.session.selectedChain;
+      if (!chain) {
+        await ctx.reply('Please select a chain first.');
+        return;
+      }
+
+      // Parse numeric value
+      const amount = parseFloat(text);
+      
+      // Validate numeric input
+      if (isNaN(amount) || amount <= 0) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+        
+        await ctx.reply('❌ Invalid amount. Please enter a valid number (e.g. 800).', { reply_markup: keyboard });
+        return;
+      }
+
+      // Get chain config for minimum amount validation
+      const chainConfig = await this.settingsService.getChainConfig(chain as any);
+      
+      // Validate against minimum amount
+      if (amount < chainConfig.minAmountNaira) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+        
+        await ctx.reply(
+          `❌ Minimum order for ${chain} is ₦${chainConfig.minAmountNaira}. Please enter a higher amount.`,
+          { reply_markup: keyboard }
+        );
+        return;
+      }
+
+      // Store valid amount and proceed to wallet input
+      ctx.session.selectedAmountNaira = amount;
+      ctx.session.step = BotSessionStep.AWAITING_WALLET;
+
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      await ctx.reply(`Please reply with your target wallet address for ${chain}:`, { reply_markup: keyboard });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in custom amount input handler: ${err.message}`, err.stack);
+      await ctx.reply('Sorry, something went wrong. Please try again.');
     }
   }
 
@@ -486,15 +611,52 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           ctx.session.step = BotSessionStep.SELECT_CHAIN;
           ctx.session.selectedAmountNaira = null;
           ctx.session.userId = currentUserId; // Preserve userId
+
+          // Get enabled chains dynamically
+          const enabledChains = await this.settingsService.getAllEnabledChains();
           
-          const chainKeyboard = new InlineKeyboard()
-            .text(CHAIN_DISPLAY_NAMES[BotCallbackChain.CHAIN_SOLANA], BotCallbackChain.CHAIN_SOLANA)
-            .text(CHAIN_DISPLAY_NAMES[BotCallbackChain.CHAIN_BASE], BotCallbackChain.CHAIN_BASE)
-            .text(CHAIN_DISPLAY_NAMES[BotCallbackChain.CHAIN_TON], BotCallbackChain.CHAIN_TON)
-            .row()
-            .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+          // Build keyboard with only enabled chains
+          const chainKeyboard = new InlineKeyboard();
+          
+          const chainMapping: Record<string, BotCallbackChain> = {
+            'SOLANA': BotCallbackChain.CHAIN_SOLANA,
+            'BASE': BotCallbackChain.CHAIN_BASE,
+            'TON': BotCallbackChain.CHAIN_TON,
+          };
+          
+          enabledChains.forEach((chain, index) => {
+            const chainCallback = chainMapping[chain];
+            if (chainCallback) {
+              chainKeyboard.text(CHAIN_DISPLAY_NAMES[chainCallback], chainCallback);
+              if ((index + 1) % 3 === 0 || index === enabledChains.length - 1) {
+                chainKeyboard.row();
+              }
+            }
+          });
+          
+          chainKeyboard.text('🏠 Home', BotCallbackAction.ACTION_HOME);
           
           await ctx.editMessageText('Select the blockchain network:', { reply_markup: chainKeyboard });
+          await ctx.answerCallbackQuery();
+          break;
+        
+        case BotSessionStep.AWAITING_CUSTOM_AMOUNT:
+          // Go back to Amount Selection
+          ctx.session.step = BotSessionStep.SELECT_AMOUNT;
+          ctx.session.userId = currentUserId; // Preserve userId
+
+          const customAmountKeyboard = new InlineKeyboard()
+            .text('₦1,000', BotCallbackAmount.AMT_1000)
+            .text('₦2,500', BotCallbackAmount.AMT_2500)
+            .text('₦5,000', BotCallbackAmount.AMT_5000)
+            .row()
+            .text('✍️ Custom Amount', BotCallbackAmount.AMT_CUSTOM)
+            .row()
+            .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+            .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+          
+          const customChainName = ctx.session.selectedChain;
+          await ctx.editMessageText(`Select amount for ${customChainName}:`, { reply_markup: customAmountKeyboard });
           await ctx.answerCallbackQuery();
           break;
         
@@ -507,6 +669,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             .text('₦1,000', BotCallbackAmount.AMT_1000)
             .text('₦2,500', BotCallbackAmount.AMT_2500)
             .text('₦5,000', BotCallbackAmount.AMT_5000)
+            .row()
+            .text('✍️ Custom Amount', BotCallbackAmount.AMT_CUSTOM)
             .row()
             .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
             .text('🏠 Home', BotCallbackAction.ACTION_HOME);

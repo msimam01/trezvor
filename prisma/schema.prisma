@@ -74,3 +74,18 @@ model WebhookLog {
 
   @@index([paymentRef])
 }
+
+model SystemConfig {
+  id                 String   @id @default("global")
+  platformFeePercent Decimal  @default(15.00) @db.Decimal(5, 2)
+  updatedAt          DateTime @updatedAt
+}
+
+model ChainConfig {
+  id             String         @id @default(uuid())
+  chain          SupportedChain @unique
+  isEnabled      Boolean        @default(true)
+  minAmountNaira Decimal        @db.Decimal(12, 2)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+}

@@ -17,16 +17,18 @@ export enum BotCallbackAmount {
   AMT_1000 = 'AMT_1000',
   AMT_2500 = 'AMT_2500',
   AMT_5000 = 'AMT_5000',
+  AMT_CUSTOM = 'AMT_CUSTOM',
 }
 
 export enum BotSessionStep {
   IDLE = 'IDLE',
   SELECT_CHAIN = 'SELECT_CHAIN',
   SELECT_AMOUNT = 'SELECT_AMOUNT',
+  AWAITING_CUSTOM_AMOUNT = 'AWAITING_CUSTOM_AMOUNT',
   AWAITING_WALLET = 'AWAITING_WALLET',
 }
 
-export const AMOUNT_NAIRA_MAP: Record<BotCallbackAmount, number> = {
+export const AMOUNT_NAIRA_MAP: Partial<Record<BotCallbackAmount, number>> = {
   [BotCallbackAmount.AMT_1000]: 1000,
   [BotCallbackAmount.AMT_2500]: 2500,
   [BotCallbackAmount.AMT_5000]: 5000,
@@ -37,5 +39,3 @@ export const CHAIN_DISPLAY_NAMES: Record<BotCallbackChain, string> = {
   [BotCallbackChain.CHAIN_BASE]: 'Base (ETH)',
   [BotCallbackChain.CHAIN_TON]: 'TON (TON)',
 };
-
-export const PLATFORM_FEE_PERCENTAGE = 0.15; // 15% platform spread
