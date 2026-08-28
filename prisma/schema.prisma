@@ -1,0 +1,76 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+ 
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAYMENT_VERIFIED
+  DISPENSING_QUEUED
+  DISPENSED_SUCCESS
+  FAILED_REFUND_NEEDED
+}
+
+enum SupportedChain {
+  SOLANA
+  BASE
+  TON
+}
+
+enum PaymentGateway {
+  PAYSTACK
+  FLUTTERWAVE
+  OPAY
+}
+
+model User {
+  id         String   @id @default(uuid())
+  telegramId BigInt   @unique
+  username   String?
+  firstName  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  orders     Order[]
+
+  @@index([telegramId])
+}
+
+model Order {
+  id             String        @id @default(uuid())
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chain          SupportedChain
+  targetWallet   String
+  fiatAmountNaira Decimal       @db.Decimal(12, 2)
+  feeNaira       Decimal       @db.Decimal(12, 2)
+  totalAmount    Decimal       @db.Decimal(12, 2)
+  cryptoAmount   Decimal       @db.Decimal(18, 8)
+  paymentRef     String        @unique
+  paymentGateway PaymentGateway
+  txHash         String?
+  status         OrderStatus   @default(PENDING_PAYMENT)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([paymentRef])
+  @@index([createdAt])
+}
+
+model WebhookLog {
+  id          String        @id @default(uuid())
+  paymentRef  String        @unique
+  gateway     PaymentGateway
+  payload     Json
+  processedAt DateTime      @default(now())
+
+  @@index([paymentRef])
+}
