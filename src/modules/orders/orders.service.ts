@@ -13,6 +13,13 @@ interface CreateOrderDto {
   status: 'PENDING_PAYMENT' | 'PAYMENT_VERIFIED' | 'DISPENSING_QUEUED' | 'DISPENSED_SUCCESS' | 'FAILED_REFUND_NEEDED';
 }
 
+// Chain-specific fallback amounts for testnet
+const CHAIN_FALLBACK_AMOUNTS: Record<'SOLANA' | 'BASE' | 'TON', number> = {
+  SOLANA: 0.01,   // 0.01 SOL
+  BASE: 0.001,    // 0.001 ETH
+  TON: 0.1,       // 0.1 TON
+};
+
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
@@ -21,9 +28,19 @@ export class OrdersService {
 
   async createOrder(createOrderDto: CreateOrderDto) {
     try {
+      // Ensure cryptoAmount is a valid positive number
+      let cryptoAmount = createOrderDto.cryptoAmount;
+      
+      if (cryptoAmount <= 0 || isNaN(cryptoAmount)) {
+        // Use chain-specific fallback amount for testnet
+        cryptoAmount = CHAIN_FALLBACK_AMOUNTS[createOrderDto.chain as keyof typeof CHAIN_FALLBACK_AMOUNTS] || 0.01;
+        this.logger.warn(`[OrdersService] cryptoAmount was ${createOrderDto.cryptoAmount}. Using fallback: ${cryptoAmount} ${createOrderDto.chain}`);
+      }
+
       const order = await this.prisma.order.create({
         data: {
           ...createOrderDto,
+          cryptoAmount,
           paymentRef: this.generatePaymentRef(),
         },
       });

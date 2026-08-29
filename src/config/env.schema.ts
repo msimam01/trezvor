@@ -11,6 +11,13 @@ const envSchema = z.object({
   APP_BASE_URL: z.string().optional().default('http://localhost:3000'),
   PAYSTACK_SECRET_KEY: z.string().min(1),
   ENABLE_BOT: z.string().optional().default('true'),
+  // Web3 Configuration - Module 6 (optional in development)
+  SOLANA_RPC_URL: z.string().optional(),
+  SOLANA_VAULT_PRIVATE_KEY: z.string().optional(),
+  BASE_RPC_URL: z.string().optional(),
+  BASE_VAULT_PRIVATE_KEY: z.string().optional(),
+  TON_RPC_URL: z.string().optional(),
+  TON_VAULT_MNEMONIC: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -870,6 +870,24 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Send notification to a specific user by Telegram ID
+   * Used for order status updates, gas dispense notifications, etc.
+   */
+  async sendNotification(telegramId: bigint, message: string, options?: any) {
+    try {
+      await this.bot.api.sendMessage(telegramId.toString(), message, {
+        parse_mode: 'HTML',
+        ...options,
+      });
+      this.logger.log(`Notification sent to Telegram ID: ${telegramId}`);
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Failed to send notification to ${telegramId}: ${err.message}`);
+      // Don't throw - notification failures shouldn't break the main flow
+    }
+  }
+
   async onModuleDestroy() {
     try {
       this.logger.log('Stopping bot...');

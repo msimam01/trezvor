@@ -1,8 +1,10 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { GasDispenseProcessor } from './gas-dispense.processor';
 import { OrdersModule } from '../orders/orders.module';
+import { Web3Module } from '../web3/web3.module';
+import { BotModule } from '../bot/bot.module';
 
 const queueModule = BullModule.forRootAsync({
   imports: [],
@@ -28,6 +30,8 @@ const queueModule = BullModule.forRootAsync({
       name: 'gas-dispense-queue',
     }),
     OrdersModule,
+    Web3Module,
+    forwardRef(() => BotModule),
   ],
   providers: [GasDispenseProcessor],
   exports: [BullModule],

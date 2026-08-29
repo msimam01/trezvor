@@ -2,10 +2,19 @@ import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { OrdersService } from '../orders/orders.service';
+import { Web3Service } from '../web3/web3.service';
+import { BotService } from '../bot/bot.service';
 
 interface GasDispenseJobData {
   orderId: string;
 }
+
+// Chain-specific fallback amounts for testnet
+const CHAIN_FALLBACK_AMOUNTS: Record<'SOLANA' | 'BASE' | 'TON', number> = {
+  SOLANA: 0.01,   // 0.01 SOL
+  BASE: 0.001,    // 0.001 ETH
+  TON: 0.1,       // 0.1 TON
+};
 
 @Processor('gas-dispense-queue')
 export class GasDispenseProcessor extends WorkerHost {
@@ -13,15 +22,17 @@ export class GasDispenseProcessor extends WorkerHost {
 
   constructor(
     private readonly ordersService: OrdersService,
+    private readonly web3Service: Web3Service,
+    private readonly botService: BotService,
   ) {
     super();
     this.logger.log('GasDispenseProcessor initialized');
   }
 
   async process(job: Job<GasDispenseJobData>): Promise<any> {
-    try {
-      const { orderId } = job.data;
+    const { orderId } = job.data;
 
+    try {
       this.logger.log(`[BullMQ Worker] Starting gas payout processing for Order ID: ${orderId}`);
 
       // Retrieve order details
@@ -47,27 +58,84 @@ export class GasDispenseProcessor extends WorkerHost {
         `[BullMQ Worker] Processing gas payout for Order ID: ${orderId} on ${order.chain}`,
       );
 
-      // TODO: Module 6 will execute Web3 RPC transactions here
-      // For now, we'll simulate the processing and mark as success
-      this.logger.log(`[BullMQ Worker] Web3 transaction execution will be implemented in Module 6`);
+      // Execute Web3 transaction
+      let cryptoAmount = Number(order.cryptoAmount);
+      
+      // Ensure non-zero payout amount for testnet
+      if (cryptoAmount <= 0 || isNaN(cryptoAmount)) {
+        const fallbackAmount = CHAIN_FALLBACK_AMOUNTS[order.chain as keyof typeof CHAIN_FALLBACK_AMOUNTS] || 0.01;
+        this.logger.warn(`[GasDispenseProcessor] order.cryptoAmount was ${cryptoAmount}. Using fallback amount: ${fallbackAmount} ${order.chain}`);
+        cryptoAmount = fallbackAmount;
+      }
+      
+      const { txHash, explorerUrl } = await this.web3Service.dispenseGas(
+        order.chain,
+        order.targetWallet,
+        cryptoAmount,
+      );
 
-      // Simulate processing time (remove in production)
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      this.logger.log(`[BullMQ Worker] Web3 transaction executed successfully: ${txHash}`);
 
-      // Update order status to DISPENSED_SUCCESS (temporary - will be done in Module 6)
-      await this.ordersService.updateOrderStatus(orderId, 'DISPENSED_SUCCESS');
-      this.logger.log(`[BullMQ Worker] Order ${orderId} marked as DISPENSED_SUCCESS`);
+      // Update order status to DISPENSED_SUCCESS with txHash
+      await this.ordersService.updateOrderStatus(orderId, 'DISPENSED_SUCCESS', txHash);
+      this.logger.log(`[BullMQ Worker] Order ${orderId} marked as DISPENSED_SUCCESS with txHash: ${txHash}`);
+
+      // Determine token symbol based on chain
+      const tokenSymbol = {
+        SOLANA: 'SOL',
+        BASE: 'ETH',
+        TON: 'TON',
+      }[order.chain] || 'tokens';
+
+      // Send Telegram success notification to the user
+      const successMessage = 
+        `🎉 <b>Micro-Gas Dispensed Successfully!</b>\n\n` +
+        `• <b>Chain:</b> ${order.chain}\n` +
+        `• <b>Amount Sent:</b> ${cryptoAmount}${tokenSymbol}\n` +
+        `• <b>Target Wallet:</b> <code>${order.targetWallet}</code>\n` +
+        `• <b>Tx Hash:</b> <a href="${explorerUrl}">${txHash.slice(0, 10)}...${txHash.slice(-6)}</a>`;
+
+      await this.botService.sendNotification(order.user.telegramId, successMessage);
+      this.logger.log(`[BullMQ Worker] Success notification sent to user ${order.user.telegramId}`);
 
       return {
         status: 'success',
         orderId,
         chain: order.chain,
         targetWallet: order.targetWallet,
+        txHash,
       };
     } catch (error) {
       const err = error as Error;
       this.logger.error(`[BullMQ Worker] Error processing job: ${err.message}`, err.stack);
-      throw err; // Re-throw to trigger BullMQ retry mechanism
+
+      // Check if retry attempts are exhausted
+      if (job.attemptsMade >= (job.opts.attempts || 5)) {
+        this.logger.error(`[BullMQ Worker] All retry attempts exhausted for Order ID: ${orderId}`);
+        
+        // Update order status to FAILED_REFUND_NEEDED
+        await this.ordersService.updateOrderStatus(orderId, 'FAILED_REFUND_NEEDED');
+        this.logger.log(`[BullMQ Worker] Order ${orderId} marked as FAILED_REFUND_NEEDED`);
+
+        // Send failure notification to user
+        const failedOrder = await this.ordersService.findOrderById(orderId);
+        if (failedOrder) {
+          const failureMessage = 
+            `❌ Gas Dispatch Delayed\n\n` +
+            `Your order is flagged for manual review or refund.\n` +
+            `Reference: <code>${failedOrder.paymentRef}</code>\n\n` +
+            `Our team will review your order and process a refund if needed.`;
+
+          await this.botService.sendNotification(failedOrder.user.telegramId, failureMessage);
+          this.logger.log(`[BullMQ Worker] Failure notification sent to user ${failedOrder.user.telegramId}`);
+        }
+
+        // Don't throw - mark job as failed after handling
+        return { status: 'failed', orderId, reason: 'retry_exhausted' };
+      }
+
+      // Re-throw to trigger BullMQ retry mechanism
+      throw err;
     }
   }
 
