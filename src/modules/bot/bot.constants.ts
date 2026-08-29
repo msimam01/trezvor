@@ -5,6 +5,7 @@ export enum BotCallbackAction {
   ACTION_BACK = 'ACTION_BACK',
   ACTION_HOME = 'ACTION_HOME',
   ACTION_PAY_NOW = 'ACTION_PAY_NOW',
+  ACTION_CANCEL_ORDER = 'ACTION_CANCEL_ORDER',
 }
 
 export enum BotCallbackChain {

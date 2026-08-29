@@ -7,7 +7,10 @@ const envSchema = z.object({
   REDIS_HOST: z.string().default('localhost'),
   REDIS_PORT: z.coerce.number().default(6379),
   TELEGRAM_BOT_TOKEN: z.string().min(1),
+  TELEGRAM_BOT_USERNAME: z.string().optional().default(''),
+  APP_BASE_URL: z.string().optional().default('http://localhost:3000'),
   PAYSTACK_SECRET_KEY: z.string().min(1),
+  ENABLE_BOT: z.string().optional().default('true'),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -51,6 +51,13 @@ export class OrdersService {
     });
   }
 
+  async findOrderById(id: string) {
+    return this.prisma.order.findUnique({
+      where: { id },
+      include: { user: true },
+    });
+  }
+
   async findByUserId(userId: string) {
     return this.prisma.order.findMany({
       where: { userId },

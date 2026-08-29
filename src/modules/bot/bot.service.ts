@@ -12,6 +12,7 @@ import {
 import { UsersService } from '../users/users.service';
 import { OrdersService } from '../orders/orders.service';
 import { SettingsService } from '../settings/settings.service';
+import { PaymentsService } from '../payments/payments.service';
 import { validateWalletAddress, getValidationErrorMessage, ChainType } from './helpers/wallet-validator';
 
 interface BotSessionData {
@@ -35,6 +36,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly usersService: UsersService,
     private readonly ordersService: OrdersService,
     private readonly settingsService: SettingsService,
+    private readonly paymentsService: PaymentsService,
   ) {
     this.botToken = this.configService.get<string>('TELEGRAM_BOT_TOKEN') || '';
     if (!this.botToken) {
@@ -71,6 +73,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.callbackQuery(BotCallbackAction.ACTION_BACK, this.handleBack.bind(this));
     this.bot.callbackQuery(BotCallbackAction.ACTION_HOME, this.handleHome.bind(this));
     this.bot.callbackQuery(BotCallbackAction.ACTION_PAY_NOW, this.handlePayNow.bind(this));
+    this.bot.callbackQuery(BotCallbackAction.ACTION_CANCEL_ORDER, this.handleCancelOrder.bind(this));
 
     // Chain selection handlers
     this.bot.callbackQuery(BotCallbackChain.CHAIN_SOLANA, this.handleChainSelection.bind(this));
@@ -116,18 +119,45 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       ctx.session.selectedAmountNaira = null;
       ctx.session.userId = user.id;
 
-      // Send welcome message with inline keyboard
-      const keyboard = new InlineKeyboard()
-        .text('⛽ Buy Micro-Gas', BotCallbackAction.ACTION_BUY_GAS)
-        .row()
-        .text('📜 My Orders', BotCallbackAction.ACTION_MY_ORDERS)
-        .text('❓ Help', BotCallbackAction.ACTION_HELP);
+      // Deep Link Handling: e.g., /start order_UUID
+      const payload = ctx.match; // Captures deep-link parameter after ?start=
+      
+      if (payload && typeof payload === 'string' && payload.startsWith('order_')) {
+        const orderId = payload.replace('order_', '').trim();
+        const order = await this.ordersService.findOrderById(orderId);
 
-      await ctx.reply(
-        `Welcome ${firstName || 'User'}! 🚀\n\n` +
-        `I'm your Micro-Gas transaction bot. Use the buttons below to get started.`,
-        { reply_markup: keyboard },
-      );
+        if (order) {
+          const statusEmoji = {
+            PENDING_PAYMENT: '⏳',
+            PAYMENT_VERIFIED: '✅',
+            DISPENSING_QUEUED: '⚙️',
+            DISPENSED_SUCCESS: '🎉',
+            FAILED_REFUND_NEEDED: '❌',
+          }[order.status] || 'ℹ️';
+
+          const message = 
+            `${statusEmoji} <b>Order Status: ${order.status}</b>\n\n` +
+            `• <b>Chain:</b> ${order.chain}\n` +
+            `• <b>Amount Paid:</b> ₦${order.totalAmount}\n` +
+            `• <b>Target Wallet:</b> <code>${order.targetWallet}</code>\n` +
+            `• <b>Ref:</b> <code>${order.paymentRef}</code>\n\n` +
+            (order.status === 'PAYMENT_VERIFIED' || order.status === 'DISPENSING_QUEUED' 
+              ? '🚀 Your micro-gas is currently being queued for on-chain transfer!' 
+              : 'Tap below to return to main menu.');
+
+          const keyboard = new InlineKeyboard()
+            .text('🏠 Main Menu', BotCallbackAction.ACTION_HOME);
+
+          await ctx.reply(message, {
+            parse_mode: 'HTML',
+            reply_markup: keyboard,
+          });
+          return;
+        }
+      }
+
+      // Fallback to standard Main Menu if no payload or order not found
+      await this.sendMainMenu(ctx, firstName || 'User');
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in /start handler: ${err.message}`, err.stack);
@@ -424,7 +454,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const keyboard = new InlineKeyboard()
         .text('💳 Pay Now', BotCallbackAction.ACTION_PAY_NOW)
         .row()
-        .text('❌ Cancel', BotCallbackAction.ACTION_HOME);
+        .text('❌ Cancel', BotCallbackAction.ACTION_CANCEL_ORDER);
 
       await ctx.reply(summary, { reply_markup: keyboard });
     } catch (error) {
@@ -587,7 +617,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       });
 
       ctx.session.userId = user.id;
-      await this.handleHome(ctx);
+      await this.sendMainMenu(ctx, firstName);
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in /home command: ${err.message}`, err.stack);
@@ -603,7 +633,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       switch (currentStep) {
         case BotSessionStep.SELECT_CHAIN:
           // Go to IDLE (Main Menu)
-          await this.handleHome(ctx);
+          await this.sendMainMenu(ctx);
           break;
         
         case BotSessionStep.SELECT_AMOUNT:
@@ -681,7 +711,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           break;
         
         default:
-          await this.handleHome(ctx);
+          await this.sendMainMenu(ctx);
       }
     } catch (error) {
       const err = error as Error;
@@ -696,7 +726,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       
       if (!orderId) {
         await ctx.answerCallbackQuery({ text: 'No order found. Please start a new order.' });
-        await this.handleHome(ctx);
+        await this.sendMainMenu(ctx);
         return;
       }
 
@@ -705,28 +735,73 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       
       if (!order) {
         await ctx.answerCallbackQuery({ text: 'Order not found. Please start a new order.' });
-        await this.handleHome(ctx);
+        await this.sendMainMenu(ctx);
         return;
       }
 
-      // Placeholder for payment integration (Module 4)
-      await ctx.answerCallbackQuery({ 
-        text: '💳 Payment integration coming soon in Module 4!' 
-      });
+      // Initialize Paystack transaction
+      const paymentResult = await this.paymentsService.initializePaystackTransaction(orderId);
       
-      // For now, just show a message about the payment
+      if (!paymentResult.authorizationUrl) {
+        await ctx.answerCallbackQuery({ text: 'Failed to initialize payment. Please try again.' });
+        return;
+      }
+
+      const totalAmount = Number(order.totalAmount).toLocaleString();
+
+      // Create inline keyboard with payment URL button
+      const keyboard = new InlineKeyboard()
+        .url(`💳 Pay ₦${totalAmount} Now`, paymentResult.authorizationUrl)
+        .row()
+        .text('❌ Cancel', BotCallbackAction.ACTION_CANCEL_ORDER);
+
+      await ctx.answerCallbackQuery({ text: 'Payment page generated!' });
+      
       await ctx.reply(
-        `💳 Payment Processing\n\n` +
+        `💳 Payment Ready\n\n` +
         `Order ID: ${order.id.substring(0, 8)}...\n` +
-        `Amount: ₦${order.totalAmount}\n` +
-        `Status: ${order.status}\n\n` +
-        `Payment gateway integration will be implemented in Module 4.\n\n` +
-        `Use /home to return to main menu.`
+        `Amount: ₦${totalAmount}\n` +
+        `Status: ⏳ Awaiting Payment\n\n` +
+        `Click the button below to complete your payment via Paystack:`,
+        { reply_markup: keyboard }
       );
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in ACTION_PAY_NOW handler: ${err.message}`, err.stack);
       await ctx.answerCallbackQuery({ text: 'Error processing payment request' });
+    }
+  }
+
+  private async handleCancelOrder(ctx: BotContext) {
+    try {
+      // Clear the last order ID from session
+      ctx.session.lastOrderId = null;
+      
+      await ctx.answerCallbackQuery({ text: 'Order cancelled' });
+      await this.sendMainMenu(ctx);
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in ACTION_CANCEL_ORDER handler: ${err.message}`, err.stack);
+      await ctx.answerCallbackQuery({ text: 'Error cancelling order' });
+    }
+  }
+
+  private async sendMainMenu(ctx: BotContext, firstName?: string) {
+    const keyboard = new InlineKeyboard()
+      .text('⛽ Buy Micro-Gas', BotCallbackAction.ACTION_BUY_GAS)
+      .row()
+      .text('📜 My Orders', BotCallbackAction.ACTION_MY_ORDERS)
+      .text('❓ Help', BotCallbackAction.ACTION_HELP);
+
+    const message = firstName 
+      ? `Welcome ${firstName}! 🚀\n\nI'm your Micro-Gas transaction bot. Use the buttons below to get started.`
+      : `🏠 Main Menu\n\nWelcome back! Choose an option below:`;
+
+    if (ctx.callbackQuery) {
+      await ctx.editMessageText(message, { reply_markup: keyboard });
+      await ctx.answerCallbackQuery();
+    } else {
+      await ctx.reply(message, { reply_markup: keyboard });
     }
   }
 
@@ -740,26 +815,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       ctx.session.userId = currentUserId;
 
       // Render main menu screen
-      const keyboard = new InlineKeyboard()
-        .text('⛽ Buy Micro-Gas', BotCallbackAction.ACTION_BUY_GAS)
-        .row()
-        .text('📜 My Orders', BotCallbackAction.ACTION_MY_ORDERS)
-        .text('❓ Help', BotCallbackAction.ACTION_HELP);
-
-      if (ctx.callbackQuery) {
-        await ctx.editMessageText(
-          `🏠 Main Menu\n\n` +
-          `Welcome back! Choose an option below:`,
-          { reply_markup: keyboard },
-        );
-        await ctx.answerCallbackQuery();
-      } else {
-        await ctx.reply(
-          `🏠 Main Menu\n\n` +
-          `Welcome back! Choose an option below:`,
-          { reply_markup: keyboard },
-        );
-      }
+      await this.sendMainMenu(ctx);
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in ACTION_HOME handler: ${err.message}`, err.stack);
@@ -770,29 +826,47 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     try {
       const isDevelopment = this.configService.get<string>('NODE_ENV') !== 'production';
+      const enableBot = this.configService.get<string>('ENABLE_BOT') !== 'false';
       
-      // Register bot commands with Telegram
-      await this.bot.api.setMyCommands([
-        { command: 'start', description: 'Main Menu & Home' },
-        { command: 'buygas', description: '⛽ Buy Micro-Gas' },
-        { command: 'orders', description: '📜 View My Orders' },
-        { command: 'help', description: '❓ Support & Guide' },
-        { command: 'home', description: '🏠 Return to Main Menu' },
-      ]);
-      this.logger.log('Bot commands registered successfully');
+      if (!enableBot) {
+        this.logger.log('Bot is disabled via ENABLE_BOT=false. Payment endpoints remain available.');
+        return;
+      }
+      
+      // Register bot commands with Telegram (with error handling)
+      try {
+        await this.bot.api.setMyCommands([
+          { command: 'start', description: 'Main Menu & Home' },
+          { command: 'buygas', description: '⛽ Buy Micro-Gas' },
+          { command: 'orders', description: '📜 View My Orders' },
+          { command: 'help', description: '❓ Support & Guide' },
+          { command: 'home', description: '🏠 Return to Main Menu' },
+        ]);
+        this.logger.log('Bot commands registered successfully');
+      } catch (telegramError) {
+        const err = telegramError as Error;
+        this.logger.warn(`Failed to register bot commands (Telegram API may be unreachable): ${err.message}`);
+        this.logger.log('Continuing without bot commands registration...');
+      }
       
       if (isDevelopment) {
         this.logger.log('Starting bot in development mode (long-polling)...');
-        await this.bot.start();
-        this.logger.log('Bot started successfully');
+        // Start bot asynchronously without blocking module initialization
+        this.bot.start().then(() => {
+          this.logger.log('Bot started successfully');
+        }).catch((startError) => {
+          const err = startError as Error;
+          this.logger.warn(`Failed to start bot (network issues?): ${err.message}`);
+          this.logger.log('Application will continue without bot - payment endpoints remain available');
+        });
       } else {
         this.logger.log('Bot webhook setup required for production mode');
         // Webhook setup would be implemented here for production
       }
     } catch (error) {
       const err = error as Error;
-      this.logger.error(`Failed to start bot: ${err.message}`, err.stack);
-      throw error;
+      this.logger.error(`Failed to initialize bot service: ${err.message}`, err.stack);
+      this.logger.log('Application will continue without bot - payment endpoints remain available');
     }
   }
 

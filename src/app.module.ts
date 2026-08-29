@@ -8,6 +8,7 @@ import { validate } from './config/env.schema';
 import { PrismaModule } from './prisma/prisma.module';
 import { BotModule } from './modules/bot/bot.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { SettingsModule } from './modules/settings/settings.module';
     PrismaModule,
     SettingsModule,
     BotModule,
+    PaymentsModule,
   ],
   controllers: [AppController],
   providers: [
