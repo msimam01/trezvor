@@ -9,6 +9,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { BotModule } from './modules/bot/bot.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { QueueModule } from './modules/queue/queue.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
     SettingsModule,
     BotModule,
     PaymentsModule,
+    QueueModule,
   ],
   controllers: [AppController],
   providers: [

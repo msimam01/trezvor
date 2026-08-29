@@ -1,7 +1,9 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException, Inject } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { OrdersService } from '../orders/orders.service';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -43,6 +45,7 @@ export class PaymentsService {
     private readonly configService: ConfigService,
     private readonly ordersService: OrdersService,
     private readonly prisma: PrismaService,
+    @InjectQueue('gas-dispense-queue') private readonly gasQueue: Queue,
   ) {
     this.paystackSecretKey = this.configService.get<string>('PAYSTACK_SECRET_KEY') || '';
     if (!this.paystackSecretKey) {
@@ -170,6 +173,20 @@ export class PaymentsService {
         await this.ordersService.updateOrderStatus(order.id, 'PAYMENT_VERIFIED');
 
         this.logger.log(`Order ${order.id} payment verified and status updated to PAYMENT_VERIFIED`);
+
+        // Dispatch job to queue for gas dispensing
+        await this.gasQueue.add(
+          'process-gas-payout',
+          { orderId: order.id },
+          {
+            jobId: `order_${order.id}`, // Guarantees job uniqueness inside Redis
+            attempts: 5,
+            backoff: { type: 'exponential', delay: 3000 }, // Retry after 3s, 6s, 12s...
+            removeOnComplete: true,
+          },
+        );
+
+        this.logger.log(`Order ${order.id} dispatched to gas-dispense-queue`);
 
         return { status: 'success', orderId: order.id };
       }
