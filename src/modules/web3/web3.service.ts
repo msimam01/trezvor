@@ -141,43 +141,27 @@ export class Web3Service {
    */
   private async transferTon(targetWallet: string, amount: number): Promise<string> {
     try {
-      const rpcUrl = this.configService.get<string>('TON_RPC_URL');
-      if (!rpcUrl) {
-        throw new Error('TON_RPC_URL not configured in environment variables');
-      }
+      const apiKey = this.configService.get<string>('TON_API_KEY');
+      const endpoint =
+        this.configService.get<string>('TON_RPC_URL') ||
+        'https://testnet.toncenter.com/api/v2/jsonRPC';
 
-      const mnemonic = this.configService.get<string>('TON_VAULT_MNEMONIC');
-      if (!mnemonic) {
-        throw new Error('TON_VAULT_MNEMONIC not configured in environment variables');
-      }
-
-      const client = new TonClient({ endpoint: rpcUrl });
-      const mnemonicWords = mnemonic.split(' ').filter(word => word.length > 0);
-      
-      if (mnemonicWords.length !== 24) {
-        throw new Error('TON_VAULT_MNEMONIC must be exactly 24 words');
-      }
-
-      const keyPair = await mnemonicToPrivateKey(mnemonicWords);
-      const contract = WalletContractV4.create({ 
-        publicKey: keyPair.publicKey, 
-        workchain: 0 
+      const client = new TonClient({
+        endpoint,
+        ...(apiKey ? { apiKey } : {}),
       });
 
-      // Open contract with client
-      const contractProvider = client.open(contract);
+      const mnemonic = this.configService.get<string>('TON_VAULT_MNEMONIC') || '';
+      const keyPair = await mnemonicToPrivateKey(mnemonic.trim().split(' '));
+      const walletContract = WalletContractV4.create({
+        publicKey: keyPair.publicKey,
+        workchain: 0,
+      });
+      const wallet = client.open(walletContract);
 
-      // Get current seqno
-      let seqno: number;
-      try {
-        seqno = await contractProvider.getSeqno();
-      } catch (error) {
-        // If wallet not yet initialized, seqno is 0
-        seqno = 0;
-      }
+      const seqno = await wallet.getSeqno();
 
-      // Send transfer
-      await contractProvider.sendTransfer({
+      const transferCell = wallet.createTransfer({
         seqno,
         secretKey: keyPair.secretKey,
         messages: [
@@ -189,34 +173,39 @@ export class Web3Service {
         ],
       });
 
-      // Poll until seqno increments to confirm on-chain delivery
-      const maxAttempts = 30;
-      const pollInterval = 2000; // 2 seconds
-      
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, pollInterval));
-        
+      // Broadcast transfer cell to the network
+      await wallet.send(transferCell);
+
+      // Poll until seqno increments (confirms block inclusion)
+      let confirmed = false;
+      for (let attempt = 0; attempt < 15; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
         try {
-          const currentSeqno = await contractProvider.getSeqno();
+          const currentSeqno = await wallet.getSeqno();
           if (currentSeqno > seqno) {
-            // Transaction confirmed - generate a transaction hash
-            // For TON, we'll use a combination of seqno and timestamp as the hash
-            const txHash = Buffer.from(
-              `${seqno}-${Date.now()}-${targetWallet.slice(0, 8)}`
-            ).toString('base64');
-            
-            this.logger.log(`TON transfer successful: ${txHash}`);
-            return txHash;
+            confirmed = true;
+            break;
           }
-        } catch (error) {
-          // Wallet might not be initialized yet, continue polling
-          if (attempt === maxAttempts - 1) {
-            throw new Error('TON transfer confirmation timeout');
-          }
+        } catch (err) {
+          // Catch transient RPC throttling during polling
         }
       }
 
-      throw new Error('TON transfer confirmation timeout');
+      if (!confirmed) {
+        throw new Error('TON transaction failed to confirm on-chain within timeout window.');
+      }
+
+      // Fetch the latest transaction hash directly from the sender contract
+      const transactions = await client.getTransactions(wallet.address, { limit: 1 });
+      if (transactions.length > 0) {
+        const txHash = transactions[0].hash().toString('hex');
+        this.logger.log(`TON transfer successful: ${txHash}`);
+        return txHash;
+      }
+
+      // Fallback to recipient account link if transaction hash cannot be resolved
+      this.logger.warn(`TON transfer completed but transaction hash could not be resolved. Using target wallet as fallback.`);
+      return targetWallet;
     } catch (error) {
       const err = error as Error;
       this.logger.error(`TON transfer failed: ${err.message}`, err.stack);

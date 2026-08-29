@@ -7,7 +7,12 @@ export function getExplorerUrl(chain: SupportedChain, txHash: string): string {
     case 'BASE':
       return `https://sepolia.basescan.org/tx/${txHash}`;
     case 'TON':
-      return `https://testnet.tonviewer.com/${txHash}`;
+      // Check if it's a wallet address (starts with specific characters) or transaction hash
+      // TON addresses typically start with specific characters and are longer than tx hashes
+      if (txHash.startsWith('UQ') || txHash.startsWith('EQ') || txHash.startsWith('0:')) {
+        return `https://testnet.tonviewer.com/account/${txHash}`;
+      }
+      return `https://testnet.tonviewer.com/transaction/${txHash}`;
     default:
       return '#';
   }

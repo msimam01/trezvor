@@ -17,6 +17,7 @@ const envSchema = z.object({
   BASE_RPC_URL: z.string().optional(),
   BASE_VAULT_PRIVATE_KEY: z.string().optional(),
   TON_RPC_URL: z.string().optional(),
+  TON_API_KEY: z.string().optional(),
   TON_VAULT_MNEMONIC: z.string().optional(),
 });
 
