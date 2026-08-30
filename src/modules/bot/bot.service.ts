@@ -15,6 +15,7 @@ import { SettingsService } from '../settings/settings.service';
 import { PaymentsService } from '../payments/payments.service';
 import { OracleService } from '../oracle/oracle.service';
 import { validateWalletAddress, getValidationErrorMessage, ChainType } from './helpers/wallet-validator';
+import { getExplorerUrl } from '../web3/helpers/explorer.helper';
 
 interface BotSessionData {
   step: BotSessionStep;
@@ -133,6 +134,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             PENDING_PAYMENT: '⏳',
             PAYMENT_VERIFIED: '✅',
             DISPENSING_QUEUED: '⚙️',
+            PENDING_LIQUIDITY: '⏳',
             DISPENSED_SUCCESS: '🎉',
             FAILED_REFUND_NEEDED: '❌',
           }[order.status] || 'ℹ️';
@@ -220,7 +222,84 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
   private async handleMyOrders(ctx: BotContext) {
     try {
-      await ctx.editMessageText('📜 My Orders feature coming soon!');
+      // Ensure userId is set
+      if (!ctx.session.userId && ctx.from) {
+        const telegramId = BigInt(ctx.from.id);
+        const user = await this.usersService.findOrCreateUser({
+          telegramId,
+          username: ctx.from.username,
+          firstName: ctx.from.first_name,
+        });
+        ctx.session.userId = user.id;
+      }
+
+      if (!ctx.session.userId) {
+        await ctx.editMessageText('Unable to identify user. Please start over with /start');
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      // Fetch last 5 orders for the user
+      const orders = await this.ordersService.getUserOrders(ctx.session.userId, 5);
+
+      if (orders.length === 0) {
+        const keyboard = new InlineKeyboard()
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+        await ctx.editMessageText(
+          '� <b>My Orders</b>\n\nYou haven\'t placed any gas orders yet!\n\nClick "Buy Micro-Gas" to get started.',
+          { 
+            parse_mode: 'HTML',
+            reply_markup: keyboard 
+          }
+        );
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      // Format orders with status emojis
+      const statusEmoji = {
+        PENDING_PAYMENT: '⏳',
+        PAYMENT_VERIFIED: '✅',
+        DISPENSING_QUEUED: '⚙️',
+        PENDING_LIQUIDITY: '⏳',
+        DISPENSED_SUCCESS: '🎉',
+        FAILED_REFUND_NEEDED: '❌',
+      };
+
+      const tokenSymbol = {
+        SOLANA: 'SOL',
+        BASE: 'ETH',
+        TON: 'TON',
+      };
+
+      let ordersText = `📦 <b>My Orders</b> (Last 5)\n\n`;
+
+      orders.forEach((order, index) => {
+        const emoji = statusEmoji[order.status] || 'ℹ️';
+        const symbol = tokenSymbol[order.chain] || 'tokens';
+        const date = new Date(order.createdAt).toLocaleDateString();
+        
+        ordersText += `${emoji} <b>Order #${index + 1}</b>\n`;
+        ordersText += `📅 ${date} | 🔗 ${order.chain}\n`;
+        ordersText += `💰 ₦${Number(order.totalAmount).toLocaleString()} → ~${Number(order.cryptoAmount).toFixed(6)} ${symbol}\n`;
+        ordersText += `📝 Status: ${order.status}\n`;
+        
+        if (order.txHash) {
+          const explorerUrl = getExplorerUrl(order.chain, order.txHash);
+          ordersText += `🔗 <a href="${explorerUrl}">View Transaction</a>\n`;
+        }
+        
+        ordersText += '\n';
+      });
+
+      const keyboard = new InlineKeyboard()
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      await ctx.editMessageText(ordersText, { 
+        parse_mode: 'HTML',
+        reply_markup: keyboard 
+      });
       await ctx.answerCallbackQuery();
     } catch (error) {
       const err = error as Error;
@@ -232,17 +311,39 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private async handleHelp(ctx: BotContext) {
     try {
       const helpText = 
-        '❓ Help\n\n' +
-        'How to use this bot:\n' +
+        '❓ <b>Help & Support</b>\n\n' +
+        '🤖 <b>How to use this bot:</b>\n' +
         '1. Click "Buy Micro-Gas" to start a transaction\n' +
         '2. Select your preferred blockchain (Solana, Base, or TON)\n' +
         '3. Choose the amount you want to purchase\n' +
         '4. Provide your wallet address\n' +
         '5. Complete payment via the payment gateway\n' +
         '6. Receive your gas tokens automatically\n\n' +
-        'Need support? Contact @support';
+        '❓ <b>Frequently Asked Questions:</b>\n\n' +
+        '<b>⏱️ Transaction Delays:</b>\n' +
+        '• Normal processing time: 5-15 minutes\n' +
+        '• During high network congestion: up to 30 minutes\n' +
+        '• If delayed beyond 30 minutes, contact support\n\n' +
+        '<b>💼 Wallet Balance Guidance:</b>\n' +
+        '• Ensure your wallet has enough gas for the transaction\n' +
+        '• Solana: ~0.00001 SOL buffer recommended\n' +
+        '• Base: ~0.0001 ETH buffer recommended\n' +
+        '• TON: ~0.01 TON buffer recommended\n\n' +
+        '🆘 <b>Need Support?</b>\n' +
+        'Contact our support team: @YourGasBotSupport\n\n' +
+        '📧 <b>Email Support:</b>\n' +
+        'support@gasbot.com\n\n' +
+        '⚡ <b>Quick Links:</b>\n' +
+        '🏠 Home - Return to main menu\n' +
+        '📦 My Orders - View your order history';
       
-      await ctx.editMessageText(helpText);
+      const keyboard = new InlineKeyboard()
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      await ctx.editMessageText(helpText, { 
+        parse_mode: 'HTML',
+        reply_markup: keyboard 
+      });
       await ctx.answerCallbackQuery();
     } catch (error) {
       const err = error as Error;
@@ -402,16 +503,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      // Calculate fees using dynamic rate
+      // Get the user's selected amount (this is the total they will pay)
       const fiatAmount = ctx.session.selectedAmountNaira;
       if (!fiatAmount) {
         await ctx.reply('Invalid amount. Please start over with /start');
         return;
       }
 
-      const platformFeePercent = await this.settingsService.getGlobalFeePercent();
-      const feeNaira = fiatAmount * (platformFeePercent / 100);
-      const totalAmount = fiatAmount + feeNaira;
+      // Fee is calculated internally (5% capped at ₦200) and deducted from crypto calculation
+      // User pays exactly fiatAmount total
+      const feeNaira = Math.min(fiatAmount * 0.05, 200);
+      const totalAmount = fiatAmount; // User pays exactly what they selected
 
       // Reset session but keep userId for potential future use
       const currentUserId = ctx.session.userId;
@@ -428,8 +530,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       // Calculate crypto amount using Oracle service
       const { cryptoAmount, rateNgn } = await this.oracleService.calculateCryptoAmount(
         fiatAmount,
-        chain as any,
-        platformFeePercent
+        chain as any
       );
 
       const order = await this.ordersService.createOrder({
@@ -454,19 +555,16 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         TON: 'TON',
       }[chain || 'SOLANA'] || 'tokens';
 
-      // Send order summary with dynamic fee percentage and estimated crypto output
+      // Send order summary with estimated crypto output
       const summary =
-        `✅ Order Created Successfully!\n\n` +
-        `📋 Order Details:\n` +
+        `💳 <b>Order Summary</b>\n\n` +
         `━━━━━━━━━━━━━━━━━━\n` +
-        `🔗 Chain: ${chain}\n` +
-        `💰 Payment: ₦${fiatAmount.toLocaleString()}\n` +
-        `💳 Platform Fee: ₦${feeNaira.toLocaleString()} (${platformFeePercent}%)\n` +
-        `💵 Total: ₦${totalAmount.toLocaleString()}\n` +
-        `⚡ Estimated Output: ~${cryptoAmount}${tokenSymbol}\n` +
-        `📈 Rate: ₦${rateNgn.toLocaleString()}/${tokenSymbol}\n` +
-        `👛 Wallet: ${walletAddress.substring(0, 8)}...${walletAddress.substring(walletAddress.length - 4)}\n` +
-        `📝 Order ID: ${order.id.substring(0, 8)}...\n\n` +
+        `🔗 <b>Chain:</b> ${chain}\n` +
+        `💰 <b>Payment:</b> ₦${fiatAmount.toLocaleString()}\n` +
+        `⚡ <b>Estimated Output:</b> ~${cryptoAmount}${tokenSymbol}\n` +
+        `📈 <b>Rate:</b> ₦${rateNgn.toLocaleString()}/${tokenSymbol}\n` +
+        `👛 <b>Wallet:</b> <code>${walletAddress.substring(0, 8)}...${walletAddress.substring(walletAddress.length - 4)}</code>\n` +
+        `📝 <b>Order ID:</b> <code>${order.id.substring(0, 8)}...</code>\n\n` +
         `Status: ⏳ Pending Payment`;
 
       const keyboard = new InlineKeyboard()
@@ -474,7 +572,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         .row()
         .text('❌ Cancel', BotCallbackAction.ACTION_CANCEL_ORDER);
 
-      await ctx.reply(summary, { reply_markup: keyboard });
+      await ctx.reply(summary, { 
+        parse_mode: 'HTML',
+        reply_markup: keyboard 
+      });
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in text message handler: ${err.message}`, err.stack);

@@ -11,7 +11,7 @@ interface CreateOrderDto {
   totalAmount: number;
   cryptoAmount: number;
   paymentGateway: 'PAYSTACK' | 'FLUTTERWAVE' | 'OPAY';
-  status: 'PENDING_PAYMENT' | 'PAYMENT_VERIFIED' | 'DISPENSING_QUEUED' | 'DISPENSED_SUCCESS' | 'FAILED_REFUND_NEEDED';
+  status: 'PENDING_PAYMENT' | 'PAYMENT_VERIFIED' | 'DISPENSING_QUEUED' | 'PENDING_LIQUIDITY' | 'DISPENSED_SUCCESS' | 'FAILED_REFUND_NEEDED';
 }
 
 // Chain-specific fallback amounts for testnet
@@ -60,6 +60,7 @@ export class OrdersService {
 
   /**
    * Create order with dynamic crypto amount calculation using Oracle
+   * User pays exactly fiatAmountNaira (totalAmount), fee is deducted from crypto calculation
    */
   async createOrderWithOracle(
     userId: string,
@@ -69,14 +70,20 @@ export class OrdersService {
     feeNaira: number,
     totalAmount: number,
     paymentGateway: 'PAYSTACK' | 'FLUTTERWAVE' | 'OPAY',
-    status: 'PENDING_PAYMENT' | 'PAYMENT_VERIFIED' | 'DISPENSING_QUEUED' | 'DISPENSED_SUCCESS' | 'FAILED_REFUND_NEEDED',
+    status: 'PENDING_PAYMENT' | 'PAYMENT_VERIFIED' | 'DISPENSING_QUEUED' | 'PENDING_LIQUIDITY' | 'DISPENSED_SUCCESS' | 'FAILED_REFUND_NEEDED',
   ) {
     try {
-      // Calculate crypto amount using Oracle service
+      // Ensure totalAmount equals fiatAmountNaira (user pays exactly what they selected)
+      // Fee is calculated internally and deducted from crypto calculation
+      const actualTotalAmount = fiatAmountNaira;
+      
+      // Calculate fee if not provided (5% capped at ₦200)
+      const actualFeeNaira = feeNaira || Math.min(fiatAmountNaira * 0.05, 200);
+      
+      // Calculate crypto amount using Oracle service (fee is deducted internally)
       const { cryptoAmount } = await this.oracleService.calculateCryptoAmount(
         fiatAmountNaira,
-        chain,
-        (feeNaira / fiatAmountNaira) * 100 // Calculate fee percentage
+        chain
       );
 
       const order = await this.prisma.order.create({
@@ -85,8 +92,8 @@ export class OrdersService {
           chain,
           targetWallet,
           fiatAmountNaira,
-          feeNaira,
-          totalAmount,
+          feeNaira: actualFeeNaira,
+          totalAmount: actualTotalAmount,
           cryptoAmount,
           paymentGateway,
           status,
@@ -94,7 +101,7 @@ export class OrdersService {
         },
       });
       
-      this.logger.log(`Created order with ID: ${order.id} and crypto amount: ${cryptoAmount}`);
+      this.logger.log(`Created order with ID: ${order.id} - User pays: ₦${actualTotalAmount}, Fee: ₦${actualFeeNaira}, Crypto: ${cryptoAmount}`);
       return order;
     } catch (error) {
       const err = error as Error;
@@ -128,6 +135,14 @@ export class OrdersService {
     return this.prisma.order.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async getUserOrders(userId: string, limit: number = 10) {
+    return this.prisma.order.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
     });
   }
 

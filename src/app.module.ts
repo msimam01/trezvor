@@ -12,6 +12,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { QueueModule } from './modules/queue/queue.module';
 import { Web3Module } from './modules/web3/web3.module';
 import { OracleModule } from './modules/oracle/oracle.module';
+import { MailModule } from './modules/mail/mail.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { OracleModule } from './modules/oracle/oracle.module';
     QueueModule,
     Web3Module,
     OracleModule,
+    MailModule,
   ],
   controllers: [AppController],
   providers: [

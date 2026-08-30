@@ -174,25 +174,32 @@ export class OracleService {
 
   /**
    * Calculate crypto amount from NGN amount with fee markup
+   * Fee structure: 5% fee, hard capped at ₦200 max
    */
   async calculateCryptoAmount(
     amountNgn: number,
-    chain: SupportedChain,
-    feePercentage: number = 5
-  ): Promise<{ cryptoAmount: number; rateNgn: number; netAmountNgn: number }> {
+    chain: SupportedChain
+  ): Promise<{ cryptoAmount: number; rateNgn: number }> {
     try {
       const rateNgn = await this.getPriceInNgn(chain);
-      const netAmountNgn = amountNgn * (1 - feePercentage / 100);
+      
+      // Calculate fee: 5% fee, hard capped at ₦200 max
+      const feeNgn = Math.min(amountNgn * 0.05, 200);
+      
+      // Calculate net amount after fee
+      const netAmountNgn = amountNgn - feeNgn;
+      
+      // Calculate crypto amount
       const cryptoAmount = Number((netAmountNgn / rateNgn).toFixed(6));
 
       this.logger.log(
-        `Calculated ${chain} amount: ${cryptoAmount} (Rate: ₦${rateNgn}, Net: ₦${netAmountNgn})`
+        `Calculated ${chain} amount: ${cryptoAmount} (Rate: ₦${rateNgn}, Net: ₦${netAmountNgn}, Fee: ₦${feeNgn})`
       );
 
+      // Only return cryptoAmount and rateNgn (fee breakdown not exposed to UI)
       return {
         cryptoAmount,
         rateNgn,
-        netAmountNgn,
       };
     } catch (error) {
       const err = error as Error;

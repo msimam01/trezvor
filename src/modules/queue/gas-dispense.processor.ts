@@ -66,11 +66,38 @@ export class GasDispenseProcessor extends WorkerHost {
         cryptoAmount = fallbackAmount;
       }
       
-      const { txHash, explorerUrl } = await this.web3Service.dispenseGas(
+      const result = await this.web3Service.dispenseGas(
         order.chain,
         order.targetWallet,
         cryptoAmount,
       );
+
+      // Handle liquidity pending case
+      if ('liquidityPending' in result) {
+        this.logger.log(`[BullMQ Worker] Liquidity pending for Order ID: ${orderId}. Updating status to PENDING_LIQUIDITY.`);
+        
+        // Update order status to PENDING_LIQUIDITY
+        await this.ordersService.updateOrderStatus(orderId, 'PENDING_LIQUIDITY');
+        
+        // Send pending notification to user
+        const pendingMessage = 
+          `⏳ <b>Gas Dispense In Queue</b>\n\n` +
+          `Your payment of ₦${Number(order.totalAmount).toLocaleString()} was received! ` +
+          `Dispensing is currently undergoing automated processing. ` +
+          `Expected fulfillment time: <b>15–30 minutes</b>.\n\n` +
+          `If your transaction is not completed within 30 minutes, please contact support.`;
+
+        await this.botService.sendNotification(order.user.telegramId, pendingMessage);
+        this.logger.log(`[BullMQ Worker] Pending notification sent to user ${order.user.telegramId}`);
+
+        return {
+          status: 'pending_liquidity',
+          orderId,
+          reason: result.message,
+        };
+      }
+
+      const { txHash, explorerUrl } = result;
 
       this.logger.log(`[BullMQ Worker] Web3 transaction executed successfully: ${txHash}`);
 

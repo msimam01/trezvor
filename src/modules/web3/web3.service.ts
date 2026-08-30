@@ -7,7 +7,8 @@ import {
   SystemProgram, 
   Transaction, 
   Keypair,
-  sendAndConfirmTransaction 
+  sendAndConfirmTransaction,
+  LAMPORTS_PER_SOL
 } from '@solana/web3.js';
 import { ethers } from 'ethers';
 import bs58 from 'bs58';
@@ -15,10 +16,12 @@ import {
   TonClient, 
   WalletContractV4, 
   internal, 
-  toNano 
+  toNano,
+  Address
 } from '@ton/ton';
 import { mnemonicToPrivateKey } from '@ton/crypto';
 import { getExplorerUrl } from './helpers/explorer.helper';
+import { MailService } from '../mail/mail.service';
 
 @Injectable()
 export class Web3Service {
@@ -26,6 +29,7 @@ export class Web3Service {
 
   constructor(
     private readonly configService: ConfigService,
+    private readonly mailService: MailService,
   ) {}
 
   /**
@@ -223,15 +227,136 @@ export class Web3Service {
   }
 
   /**
+   * Check vault balance for Solana
+   */
+  private async getSolanaBalance(): Promise<number> {
+    try {
+      const rpcUrl = this.configService.get<string>('SOLANA_RPC_URL');
+      if (!rpcUrl) {
+        throw new Error('SOLANA_RPC_URL not configured');
+      }
+
+      const connection = new Connection(rpcUrl, 'confirmed');
+      const keypair = this.getSolanaKeypair();
+      const balance = await connection.getBalance(keypair.publicKey);
+      return balance / LAMPORTS_PER_SOL; // Convert lamports to SOL
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Failed to get Solana balance: ${err.message}`);
+      return 0;
+    }
+  }
+
+  /**
+   * Check vault balance for Base (ETH)
+   */
+  private async getBaseBalance(): Promise<number> {
+    try {
+      const rpcUrl = this.configService.get<string>('BASE_RPC_URL');
+      if (!rpcUrl) {
+        throw new Error('BASE_RPC_URL not configured');
+      }
+
+      const privateKey = this.configService.get<string>('BASE_VAULT_PRIVATE_KEY');
+      if (!privateKey) {
+        throw new Error('BASE_VAULT_PRIVATE_KEY not configured');
+      }
+
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const wallet = new ethers.Wallet(privateKey, provider);
+      const balance = await provider.getBalance(wallet.address);
+      return parseFloat(ethers.formatEther(balance));
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Failed to get Base balance: ${err.message}`);
+      return 0;
+    }
+  }
+
+  /**
+   * Check vault balance for TON
+   */
+  private async getTonBalance(): Promise<number> {
+    try {
+      const apiKey = this.configService.get<string>('TON_API_KEY');
+      const endpoint =
+        this.configService.get<string>('TON_RPC_URL') ||
+        'https://testnet.toncenter.com/api/v2/jsonRPC';
+
+      const client = new TonClient({
+        endpoint,
+        ...(apiKey ? { apiKey } : {}),
+      });
+
+      const mnemonic = this.configService.get<string>('TON_VAULT_MNEMONIC') || '';
+      const keyPair = await mnemonicToPrivateKey(mnemonic.trim().split(' '));
+      const walletContract = WalletContractV4.create({
+        publicKey: keyPair.publicKey,
+        workchain: 0,
+      });
+      const wallet = client.open(walletContract);
+
+      const balance = await wallet.getBalance();
+      return parseFloat(balance.toString()) / 1e9; // Convert nanoTON to TON
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Failed to get TON balance: ${err.message}`);
+      return 0;
+    }
+  }
+
+  /**
+   * Get vault balance for a specific chain
+   */
+  async getVaultBalance(chain: SupportedChain): Promise<number> {
+    switch (chain) {
+      case 'SOLANA':
+        return await this.getSolanaBalance();
+      case 'BASE':
+        return await this.getBaseBalance();
+      case 'TON':
+        return await this.getTonBalance();
+      default:
+        throw new Error(`Unsupported chain: ${chain}`);
+    }
+  }
+
+  /**
    * Unified Dispatch Method
    * Routes gas dispensing to the appropriate chain's transfer engine
+   * Includes liquidity safety check before transfer
    */
   async dispenseGas(
     chain: SupportedChain, 
     targetWallet: string, 
     cryptoAmount: number
-  ): Promise<{ txHash: string; explorerUrl: string }> {
+  ): Promise<{ txHash: string; explorerUrl: string } | { liquidityPending: true; message: string }> {
     this.logger.log(`Dispensing gas: ${chain} -> ${targetWallet}, amount: ${cryptoAmount}`);
+
+    // Check vault balance before transfer
+    const currentBalance = await this.getVaultBalance(chain);
+    const requiredAmount = cryptoAmount + 0.01; // Add small buffer for gas fees
+
+    if (currentBalance < requiredAmount) {
+      const tokenSymbol = {
+        SOLANA: 'SOL',
+        BASE: 'ETH',
+        TON: 'TON',
+      }[chain] || 'tokens';
+
+      this.logger.warn(
+        `Insufficient ${chain} vault balance: ${currentBalance} ${tokenSymbol} < ${requiredAmount} ${tokenSymbol}`
+      );
+
+      // Send alert to admin
+      await this.mailService.sendLowBalanceAlert(chain, requiredAmount, currentBalance);
+
+      // Return liquidity pending status
+      return {
+        liquidityPending: true,
+        message: `Insufficient liquidity in ${chain} vault. Current: ${currentBalance.toFixed(6)} ${tokenSymbol}, Required: ${requiredAmount.toFixed(6)} ${tokenSymbol}`,
+      };
+    }
 
     let txHash: string;
 
