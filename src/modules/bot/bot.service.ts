@@ -13,6 +13,7 @@ import { UsersService } from '../users/users.service';
 import { OrdersService } from '../orders/orders.service';
 import { SettingsService } from '../settings/settings.service';
 import { PaymentsService } from '../payments/payments.service';
+import { OracleService } from '../oracle/oracle.service';
 import { validateWalletAddress, getValidationErrorMessage, ChainType } from './helpers/wallet-validator';
 
 interface BotSessionData {
@@ -37,6 +38,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly ordersService: OrdersService,
     private readonly settingsService: SettingsService,
     private readonly paymentsService: PaymentsService,
+    private readonly oracleService: OracleService,
   ) {
     this.botToken = this.configService.get<string>('TELEGRAM_BOT_TOKEN') || '';
     if (!this.botToken) {
@@ -423,6 +425,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      // Calculate crypto amount using Oracle service
+      const { cryptoAmount, rateNgn } = await this.oracleService.calculateCryptoAmount(
+        fiatAmount,
+        chain as any,
+        platformFeePercent
+      );
+
       const order = await this.ordersService.createOrder({
         userId: currentUserId,
         chain: chain as any,
@@ -430,7 +439,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         fiatAmountNaira: fiatAmount,
         feeNaira,
         totalAmount,
-        cryptoAmount: 0, // Will be calculated based on current rates
+        cryptoAmount,
         paymentGateway: 'PAYSTACK' as any, // Default gateway
         status: 'PENDING_PAYMENT' as any,
       });
@@ -438,15 +447,24 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       // Store order ID in session for payment processing
       ctx.session.lastOrderId = order.id;
 
-      // Send order summary with dynamic fee percentage
+      // Determine token symbol
+      const tokenSymbol = {
+        SOLANA: 'SOL',
+        BASE: 'ETH',
+        TON: 'TON',
+      }[chain || 'SOLANA'] || 'tokens';
+
+      // Send order summary with dynamic fee percentage and estimated crypto output
       const summary =
         `✅ Order Created Successfully!\n\n` +
         `📋 Order Details:\n` +
         `━━━━━━━━━━━━━━━━━━\n` +
         `🔗 Chain: ${chain}\n` +
-        `💰 Gas Amount: ₦${fiatAmount.toLocaleString()}\n` +
+        `💰 Payment: ₦${fiatAmount.toLocaleString()}\n` +
         `💳 Platform Fee: ₦${feeNaira.toLocaleString()} (${platformFeePercent}%)\n` +
         `💵 Total: ₦${totalAmount.toLocaleString()}\n` +
+        `⚡ Estimated Output: ~${cryptoAmount}${tokenSymbol}\n` +
+        `📈 Rate: ₦${rateNgn.toLocaleString()}/${tokenSymbol}\n` +
         `👛 Wallet: ${walletAddress.substring(0, 8)}...${walletAddress.substring(walletAddress.length - 4)}\n` +
         `📝 Order ID: ${order.id.substring(0, 8)}...\n\n` +
         `Status: ⏳ Pending Payment`;

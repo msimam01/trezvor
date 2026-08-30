@@ -5,9 +5,10 @@ import { OrdersModule } from '../orders/orders.module';
 import { SettingsModule } from '../settings/settings.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { QueueModule } from '../queue/queue.module';
+import { OracleModule } from '../oracle/oracle.module';
 
 @Module({
-  imports: [UsersModule, OrdersModule, SettingsModule, PaymentsModule, forwardRef(() => QueueModule)],
+  imports: [UsersModule, OrdersModule, SettingsModule, PaymentsModule, forwardRef(() => QueueModule), OracleModule],
   providers: [BotService],
   exports: [BotService],
 })

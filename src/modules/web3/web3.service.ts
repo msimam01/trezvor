@@ -175,24 +175,33 @@ export class Web3Service {
 
       // Broadcast transfer cell to the network
       await wallet.send(transferCell);
+      this.logger.log(`TON transfer broadcasted to network. Waiting for confirmation...`);
+
+      // Configurable timeout settings
+      const maxAttempts = this.configService.get<number>('TON_CONFIRMATION_MAX_ATTEMPTS') || 60;
+      const pollInterval = this.configService.get<number>('TON_CONFIRMATION_POLL_INTERVAL') || 3000;
 
       // Poll until seqno increments (confirms block inclusion)
       let confirmed = false;
-      for (let attempt = 0; attempt < 15; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
         try {
           const currentSeqno = await wallet.getSeqno();
+          this.logger.log(`TON confirmation check ${attempt + 1}/${maxAttempts}: seqno ${seqno} -> ${currentSeqno}`);
+          
           if (currentSeqno > seqno) {
             confirmed = true;
+            this.logger.log(`TON transaction confirmed after ${attempt + 1} polling attempts`);
             break;
           }
         } catch (err) {
           // Catch transient RPC throttling during polling
+          this.logger.warn(`TON confirmation polling attempt ${attempt + 1} failed: ${(err as Error).message}`);
         }
       }
 
       if (!confirmed) {
-        throw new Error('TON transaction failed to confirm on-chain within timeout window.');
+        throw new Error(`TON transaction failed to confirm on-chain within timeout window (${maxAttempts * pollInterval}ms).`);
       }
 
       // Fetch the latest transaction hash directly from the sender contract

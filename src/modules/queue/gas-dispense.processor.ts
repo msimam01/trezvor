@@ -9,13 +9,6 @@ interface GasDispenseJobData {
   orderId: string;
 }
 
-// Chain-specific fallback amounts for testnet
-const CHAIN_FALLBACK_AMOUNTS: Record<'SOLANA' | 'BASE' | 'TON', number> = {
-  SOLANA: 0.01,   // 0.01 SOL
-  BASE: 0.001,    // 0.001 ETH
-  TON: 0.1,       // 0.1 TON
-};
-
 @Processor('gas-dispense-queue')
 export class GasDispenseProcessor extends WorkerHost {
   private readonly logger = new Logger(GasDispenseProcessor.name);
@@ -63,7 +56,12 @@ export class GasDispenseProcessor extends WorkerHost {
       
       // Ensure non-zero payout amount for testnet
       if (cryptoAmount <= 0 || isNaN(cryptoAmount)) {
-        const fallbackAmount = CHAIN_FALLBACK_AMOUNTS[order.chain as keyof typeof CHAIN_FALLBACK_AMOUNTS] || 0.01;
+        const fallbackAmounts: Record<string, number> = {
+          SOLANA: 0.01,   // 0.01 SOL
+          BASE: 0.001,    // 0.001 ETH
+          TON: 0.1,       // 0.1 TON
+        };
+        const fallbackAmount = fallbackAmounts[order.chain as string] || 0.01;
         this.logger.warn(`[GasDispenseProcessor] order.cryptoAmount was ${cryptoAmount}. Using fallback amount: ${fallbackAmount} ${order.chain}`);
         cryptoAmount = fallbackAmount;
       }

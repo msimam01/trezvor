@@ -10,6 +10,8 @@ import { BotModule } from './modules/bot/bot.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { QueueModule } from './modules/queue/queue.module';
+import { Web3Module } from './modules/web3/web3.module';
+import { OracleModule } from './modules/oracle/oracle.module';
 
 @Module({
   imports: [
@@ -28,6 +30,8 @@ import { QueueModule } from './modules/queue/queue.module';
     BotModule,
     PaymentsModule,
     QueueModule,
+    Web3Module,
+    OracleModule,
   ],
   controllers: [AppController],
   providers: [

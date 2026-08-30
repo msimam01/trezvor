@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { OracleService } from '../oracle/oracle.service';
 
 interface CreateOrderDto {
   userId: string;
@@ -24,7 +25,10 @@ const CHAIN_FALLBACK_AMOUNTS: Record<'SOLANA' | 'BASE' | 'TON', number> = {
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly oracleService: OracleService,
+  ) {}
 
   async createOrder(createOrderDto: CreateOrderDto) {
     try {
@@ -50,6 +54,51 @@ export class OrdersService {
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error creating order: ${err.message}`, err.stack);
+      throw err;
+    }
+  }
+
+  /**
+   * Create order with dynamic crypto amount calculation using Oracle
+   */
+  async createOrderWithOracle(
+    userId: string,
+    chain: 'SOLANA' | 'BASE' | 'TON',
+    targetWallet: string,
+    fiatAmountNaira: number,
+    feeNaira: number,
+    totalAmount: number,
+    paymentGateway: 'PAYSTACK' | 'FLUTTERWAVE' | 'OPAY',
+    status: 'PENDING_PAYMENT' | 'PAYMENT_VERIFIED' | 'DISPENSING_QUEUED' | 'DISPENSED_SUCCESS' | 'FAILED_REFUND_NEEDED',
+  ) {
+    try {
+      // Calculate crypto amount using Oracle service
+      const { cryptoAmount } = await this.oracleService.calculateCryptoAmount(
+        fiatAmountNaira,
+        chain,
+        (feeNaira / fiatAmountNaira) * 100 // Calculate fee percentage
+      );
+
+      const order = await this.prisma.order.create({
+        data: {
+          userId,
+          chain,
+          targetWallet,
+          fiatAmountNaira,
+          feeNaira,
+          totalAmount,
+          cryptoAmount,
+          paymentGateway,
+          status,
+          paymentRef: this.generatePaymentRef(),
+        },
+      });
+      
+      this.logger.log(`Created order with ID: ${order.id} and crypto amount: ${cryptoAmount}`);
+      return order;
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error creating order with oracle: ${err.message}`, err.stack);
       throw err;
     }
   }
