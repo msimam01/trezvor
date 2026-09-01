@@ -87,7 +87,7 @@ export class GasDispenseProcessor extends WorkerHost {
           `Expected fulfillment time: <b>15–30 minutes</b>.\n\n` +
           `If your transaction is not completed within 30 minutes, please contact support.`;
 
-        await this.botService.sendNotification(order.user.telegramId, pendingMessage);
+        await this.botService.sendNotification(order.user.telegramId!, pendingMessage);
         this.logger.log(`[BullMQ Worker] Pending notification sent to user ${order.user.telegramId}`);
 
         return {
@@ -120,7 +120,7 @@ export class GasDispenseProcessor extends WorkerHost {
         `• <b>Target Wallet:</b> <code>${order.targetWallet}</code>\n` +
         `• <b>Tx Hash:</b> <a href="${explorerUrl}">${txHash.slice(0, 10)}...${txHash.slice(-6)}</a>`;
 
-      await this.botService.sendNotification(order.user.telegramId, successMessage);
+      await this.botService.sendNotification(order.user.telegramId!, successMessage);
       this.logger.log(`[BullMQ Worker] Success notification sent to user ${order.user.telegramId}`);
 
       return {
@@ -151,7 +151,7 @@ export class GasDispenseProcessor extends WorkerHost {
             `Reference: <code>${failedOrder.paymentRef}</code>\n\n` +
             `Our team will review your order and process a refund if needed.`;
 
-          await this.botService.sendNotification(failedOrder.user.telegramId, failureMessage);
+          await this.botService.sendNotification(failedOrder.user.telegramId!, failureMessage);
           this.logger.log(`[BullMQ Worker] Failure notification sent to user ${failedOrder.user.telegramId}`);
         }
 

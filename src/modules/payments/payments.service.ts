@@ -71,12 +71,27 @@ export class PaymentsService {
       const totalAmountNaira = Number(order.totalAmount);
       const amountInKobo = Math.round(totalAmountNaira * 100);
 
-      // Generate email for user
-      const email = `user_${order.userId}@gasbot.app`;
+      // Generate valid email for user (sanitize userId to ensure valid email)
+      const sanitizedUserId = order.userId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 50);
+      const email = `user_${sanitizedUserId}@gasbot.app`;
 
       // Get callback URL from environment
       const appBaseUrl = this.configService.get<string>('APP_BASE_URL');
       const callbackUrl = `${appBaseUrl}/api/v1/payments/callback`;
+
+      // Log request details for debugging
+      this.logger.log(`Paystack initialization request:`, {
+        email,
+        amount: amountInKobo,
+        reference: order.paymentRef,
+        callbackUrl,
+        metadata: {
+          orderId: order.id,
+          userId: order.userId,
+          chain: order.chain,
+          targetWallet: order.targetWallet,
+        },
+      });
 
       // Make POST request to Paystack
       const response = await firstValueFrom(
@@ -114,8 +129,17 @@ export class PaymentsService {
         reference: order.paymentRef,
       };
     } catch (error) {
-      const err = error as Error;
+      const err = error as any;
       this.logger.error(`Error initializing Paystack transaction: ${err.message}`, err.stack);
+      
+      // Log additional Paystack error details if available
+      if (err.response) {
+        this.logger.error(`Paystack API response:`, {
+          status: err.response.status,
+          data: err.response.data,
+        });
+      }
+      
       throw err;
     }
   }

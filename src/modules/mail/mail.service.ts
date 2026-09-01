@@ -80,4 +80,27 @@ export class MailService {
       this.logger.error(`Failed to send admin notification: ${err.message}`);
     }
   }
+
+  /**
+   * Send email to any recipient
+   */
+  async sendEmail(to: string, subject: string, message: string): Promise<void> {
+    try {
+      await this.mailerService.sendMail({
+        to,
+        subject,
+        html: `
+          <h2>${subject}</h2>
+          <p>${message}</p>
+          <hr>
+          <p><em>This is an automated notification from GasBot Backend.</em></p>
+        `,
+      });
+
+      this.logger.log(`Email sent to ${to}: ${subject}`);
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Failed to send email to ${to}: ${err.message}`);
+    }
+  }
 }

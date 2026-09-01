@@ -1,367 +1,233 @@
 "use client";
 
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ArrowLeft, Shield, Wallet, RefreshCw, CheckCircle2, XCircle, AlertCircle, Search, Clock } from "lucide-react";
+import { Wallet, RefreshCw, Copy, ClipboardCheck } from "lucide-react";
 import Link from "next/link";
+import { api, type VaultBalance, type Order } from "@/lib/api";
 
-// Mock data for vault balances
-const vaultBalances = [
-  {
-    chain: "Solana",
-    symbol: "SOL",
-    balance: 125.5,
-    address: "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
-    status: "healthy",
-  },
-  {
-    chain: "Base",
-    symbol: "ETH",
-    balance: 8.75,
-    address: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
-    status: "healthy",
-  },
-  {
-    chain: "TON",
-    symbol: "TON",
-    balance: 450.25,
-    address: "UQC...x8L",
-    status: "warning",
-  },
-];
+const orderStatusMeta: Record<string, { label: string; color: string }> = {
+  PENDING_PAYMENT: { label: "Pending payment", color: "#8B98A5" },
+  PAYMENT_VERIFIED: { label: "Payment verified", color: "#8B98A5" },
+  DISPENSING_QUEUED: { label: "Dispensing", color: "#8B98A5" },
+  PENDING_LIQUIDITY: { label: "Pending liquidity", color: "#F2B84B" },
+  DISPENSED_SUCCESS: { label: "Success", color: "#4ADE80" },
+  FAILED_REFUND_NEEDED: { label: "Failed", color: "#F2735C" },
+};
 
-// Mock data for orders
-const mockOrders = [
-  {
-    id: "3b194bc4-de57-42cd-b237-a3d9e00728de",
-    userId: "user-123",
-    chain: "TON",
-    amount: 2.319666,
-    targetWallet: "UQCI7d2SQ9ili8W41vpsIuaMyVmBMQcsBxEcM01UE5aL-j5l",
-    status: "PENDING_LIQUIDITY",
-    createdAt: "2024-08-30T10:15:00Z",
-    paymentRef: "GAS-lq4x9m-2A5B7C",
-  },
-  {
-    id: "1a2b3c4d-5e6f-7g8h-9i0j-1k2l3m4n5o6p",
-    userId: "user-456",
-    chain: "SOLANA",
-    amount: 0.025,
-    targetWallet: "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
-    status: "DISPENSED_SUCCESS",
-    createdAt: "2024-08-30T09:30:00Z",
-    paymentRef: "GAS-k3j8h2-9D4E6F",
-    txHash: "5H7x...K9Lm",
-  },
-  {
-    id: "9f8e7d6c-5b4a-3f2e-1d0c-9b8a7f6e5d4c",
-    userId: "user-789",
-    chain: "BASE",
-    amount: 0.0015,
-    targetWallet: "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
-    status: "FAILED_REFUND_NEEDED",
-    createdAt: "2024-08-30T08:45:00Z",
-    paymentRef: "GAS-m5n1p3-7G8H9I",
-  },
-  {
-    id: "2b3c4d5e-6f7g-8h9i-0j1k-2l3m4n5o6p7q",
-    userId: "user-101",
-    chain: "SOLANA",
-    amount: 0.05,
-    targetWallet: "9xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsV",
-    status: "DISPENSING_QUEUED",
-    createdAt: "2024-08-30T11:00:00Z",
-    paymentRef: "GAS-q6r4s8-1J2K3L",
-  },
-];
-
-type OrderStatus = "PENDING_PAYMENT" | "PAYMENT_VERIFIED" | "DISPENSING_QUEUED" | "PENDING_LIQUIDITY" | "DISPENSED_SUCCESS" | "FAILED_REFUND_NEEDED";
+const vaultStatusMeta: Record<string, { color: string; note?: string }> = {
+  healthy: { color: "#4ADE80" },
+  warning: { color: "#F2B84B", note: "Running low — consider a refill" },
+  critical: { color: "#F2735C", note: "Critically low — refill now" },
+};
 
 export default function AdminPage() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [adminSecret, setAdminSecret] = useState("");
-  const [statusFilter, setStatusFilter] = useState<OrderStatus | "all">("all");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [copiedItem, setCopiedItem] = useState<string | null>(null);
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    // In production, this would verify against a real backend
-    if (adminSecret === "admin-secret-123") {
-      setIsAuthenticated(true);
-    } else {
-      alert("Invalid admin secret");
-    }
-  };
-
-  const filteredOrders = mockOrders.filter((order) => {
-    const matchesStatus = statusFilter === "all" || order.status === statusFilter;
-    const matchesSearch = 
-      order.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      order.paymentRef.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      order.targetWallet.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesStatus && matchesSearch;
+  // Fetch vault balances
+  const { data: vaultBalances = [], isLoading: vaultsLoading, refetch: refetchVaults } = useQuery({
+    queryKey: ["vault-balances"],
+    queryFn: () => api.getVaultBalances(),
   });
 
-  const getStatusBadge = (status: OrderStatus) => {
-    const statusConfig = {
-      PENDING_PAYMENT: { variant: "secondary" as const, icon: Clock, label: "Pending Payment" },
-      PAYMENT_VERIFIED: { variant: "default" as const, icon: CheckCircle2, label: "Payment Verified" },
-      DISPENSING_QUEUED: { variant: "outline" as const, icon: RefreshCw, label: "Dispensing" },
-      PENDING_LIQUIDITY: { variant: "destructive" as const, icon: AlertCircle, label: "Pending Liquidity" },
-      DISPENSED_SUCCESS: { variant: "default" as const, icon: CheckCircle2, label: "Success", className: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200" },
-      FAILED_REFUND_NEEDED: { variant: "destructive" as const, icon: XCircle, label: "Failed" },
-    };
+  // Fetch recent orders (limit 5)
+  const { data: ordersResponse, isLoading: ordersLoading, refetch: refetchOrders } = useQuery({
+    queryKey: ["admin-orders", "recent"],
+    queryFn: () => api.getOrders({ pageSize: 5 }),
+  });
 
-    const config = statusConfig[status];
-    const Icon = config.icon;
+  const recentOrders = ordersResponse?.orders || [];
 
-    return (
-      <Badge variant={config.variant} className={config.className}>
-        <Icon className="h-3 w-3 mr-1" />
-        {config.label}
-      </Badge>
-    );
+  const copyToClipboard = (text: string, type: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedItem(type);
+    setTimeout(() => setCopiedItem(null), 2000);
   };
 
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-100 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center">
-        <Card className="w-full max-w-md">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Shield className="h-6 w-6" />
-              Admin Portal
-            </CardTitle>
-            <CardDescription>Enter admin secret to access the dashboard</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleLogin} className="space-y-4">
-              <div>
-                <Input
-                  type="password"
-                  placeholder="Enter admin secret"
-                  value={adminSecret}
-                  onChange={(e) => setAdminSecret(e.target.value)}
-                  className="w-full"
-                />
-              </div>
-              <Button type="submit" className="w-full">
-                Access Dashboard
-              </Button>
-              <Link href="/">
-                <Button variant="ghost" className="w-full">
-                  <ArrowLeft className="mr-2 h-4 w-4" />
-                  Back to Home
-                </Button>
-              </Link>
-            </form>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  const handleRefreshVaults = () => {
+    refetchVaults();
+  };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-100 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
-      {/* Navigation */}
-      <nav className="border-b bg-white/50 dark:bg-gray-900/50 backdrop-blur-sm">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Shield className="h-6 w-6 text-blue-600" />
-            <span className="text-xl font-bold">Admin Portal</span>
-          </div>
-          <div className="flex items-center gap-4">
-            <Link href="/">
-              <Button variant="ghost" size="sm">
-                <ArrowLeft className="mr-2 h-4 w-4" />
-                Back to Home
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </nav>
+    <>
+      <style jsx global>{`
+        @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+        .font-display {
+          font-family: "Space Grotesk", sans-serif;
+        }
+        .font-data {
+          font-family: "IBM Plex Mono", monospace;
+          font-variant-numeric: tabular-nums;
+        }
+        .ticket {
+          background: #12181f;
+          border: 1px solid #232c36;
+        }
+        @keyframes blink {
+          0%,
+          100% {
+            opacity: 1;
+          }
+          50% {
+            opacity: 0.35;
+          }
+        }
+        .live-dot {
+          animation: blink 1.6s ease-in-out infinite;
+        }
+      `}</style>
 
-      <main className="container mx-auto px-4 py-16">
-        <div className="max-w-7xl mx-auto">
-          <div className="mb-8">
-            <h1 className="text-4xl font-bold mb-2">Admin Dashboard</h1>
-            <p className="text-gray-600 dark:text-gray-400">
-              Monitor vault balances and manage orders
-            </p>
-          </div>
+      <div className="mb-10">
+        <h1 className="font-display text-3xl font-semibold text-white mb-2">Admin</h1>
+        <p className="text-[#8B98A5]">Vault health and order activity across every chain.</p>
+      </div>
 
-          {/* Vault Balances */}
-          <div className="mb-12">
-            <h2 className="text-2xl font-semibold mb-4 flex items-center gap-2">
-              <Wallet className="h-6 w-6" />
-              Vault Balances
-            </h2>
-            <div className="grid md:grid-cols-3 gap-6">
-              {vaultBalances.map((vault) => (
-                <Card key={vault.chain}>
-                  <CardHeader>
-                    <CardTitle className="flex items-center justify-between">
-                      {vault.chain}
-                      {vault.status === "healthy" ? (
-                        <CheckCircle2 className="h-5 w-5 text-green-600" />
+      {/* Vault Balances */}
+      <div className="mb-12">
+        <h2 className="font-display text-lg font-semibold text-white mb-5 flex items-center gap-2">
+          <Wallet className="h-4 w-4 text-[#8B98A5]" />
+          Vault balances
+        </h2>
+        {vaultsLoading ? (
+          <div className="text-[#8B98A5]">Loading vault balances...</div>
+        ) : (
+          <div className="grid md:grid-cols-3 gap-5">
+            {vaultBalances.map((vault) => {
+              const meta = vaultStatusMeta[vault.status] ?? vaultStatusMeta.healthy;
+              const isLive = vault.status === "healthy";
+              return (
+                <div key={vault.chain} className="ticket rounded-md p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <p className="font-display font-medium text-white">{vault.chain}</p>
+                    <span className="relative flex h-2 w-2">
+                      <span
+                        className={`absolute inline-flex h-full w-full rounded-full ${isLive ? "live-dot" : ""}`}
+                        style={{ backgroundColor: meta.color }}
+                      />
+                    </span>
+                  </div>
+                  <p className="text-sm text-[#8B98A5] mb-1">{vault.symbol} balance</p>
+                  <p className="font-data text-2xl font-semibold text-white mb-4">
+                    {vault.balance.toFixed(6)} {vault.symbol}
+                  </p>
+                  <div className="flex items-center justify-between border-t border-dashed border-[#232C36] pt-4 mb-4">
+                    <p className="font-data text-xs text-[#8B98A5]">
+                      {vault.address.slice(0, 10)}...{vault.address.slice(-8)}
+                    </p>
+                    <button
+                      className="text-[#8B98A5] hover:text-white transition-colors"
+                      onClick={() => copyToClipboard(vault.address, `vault-${vault.chain}`)}
+                    >
+                      {copiedItem === `vault-${vault.chain}` ? (
+                        <ClipboardCheck className="h-3.5 w-3.5 text-[#4ADE80]" />
                       ) : (
-                        <AlertCircle className="h-5 w-5 text-yellow-600" />
+                        <Copy className="h-3.5 w-3.5" />
                       )}
-                    </CardTitle>
-                    <CardDescription>{vault.symbol} Vault</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-2">
-                      <div>
-                        <p className="text-sm text-gray-600 dark:text-gray-400">Balance</p>
-                        <p className="text-2xl font-bold">
-                          {vault.balance.toFixed(6)} {vault.symbol}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-600 dark:text-gray-400">Address</p>
-                        <p className="text-xs font-mono text-gray-500 dark:text-gray-400">
-                          {vault.address.slice(0, 10)}...{vault.address.slice(-8)}
-                        </p>
-                      </div>
-                      <Button variant="outline" size="sm" className="w-full mt-4">
-                        <RefreshCw className="mr-2 h-4 w-4" />
-                        Refresh
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          </div>
-
-          {/* Orders Management */}
-          <div>
-            <h2 className="text-2xl font-semibold mb-4">Order Management</h2>
-            
-            {/* Filters */}
-            <div className="flex flex-col md:flex-row gap-4 mb-6">
-              <div className="flex-1">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                  <Input
-                    placeholder="Search by ID, payment ref, or wallet..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-10"
-                  />
+                    </button>
+                  </div>
+                  {meta.note && (
+                    <p className="text-sm mb-4" style={{ color: meta.color }}>
+                      {meta.note}
+                    </p>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRefreshVaults}
+                    className="w-full border-[#232C36] bg-transparent text-[#EDEFEA] hover:bg-[#161B22] rounded-sm"
+                  >
+                    <RefreshCw className="mr-2 h-3.5 w-3.5" />
+                    Refresh
+                  </Button>
                 </div>
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  variant={statusFilter === "all" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setStatusFilter("all")}
-                >
-                  All
-                </Button>
-                <Button
-                  variant={statusFilter === "PENDING_LIQUIDITY" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setStatusFilter("PENDING_LIQUIDITY")}
-                >
-                  Pending Liquidity
-                </Button>
-                <Button
-                  variant={statusFilter === "FAILED_REFUND_NEEDED" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setStatusFilter("FAILED_REFUND_NEEDED")}
-                >
-                  Failed
-                </Button>
-                <Button
-                  variant={statusFilter === "DISPENSED_SUCCESS" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setStatusFilter("DISPENSED_SUCCESS")}
-                >
-                  Success
-                </Button>
-              </div>
-            </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
-            {/* Orders Table */}
-            <Card>
-              <CardContent className="p-0">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Order ID</TableHead>
-                      <TableHead>Chain</TableHead>
-                      <TableHead>Amount</TableHead>
-                      <TableHead>Target Wallet</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Created</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredOrders.map((order) => (
-                      <TableRow key={order.id}>
-                        <TableCell className="font-mono text-xs">
-                          {order.id.slice(0, 8)}...
+      {/* Quick Actions */}
+      <div className="grid md:grid-cols-3 gap-5 mb-12">
+        {[
+          { href: "/admin/orders", title: "Order management", desc: "View and manage every gas order" },
+          { href: "/admin/users", title: "User management", desc: "Manage registered users" },
+          { href: "/admin/settings", title: "Platform settings", desc: "Configure fees and thresholds" },
+        ].map((item) => (
+          <Link key={item.href} href={item.href}>
+            <div className="ticket rounded-md p-5 h-full hover:border-[#FF8A3D] transition-colors cursor-pointer">
+              <p className="font-display font-medium text-white mb-1.5">{item.title}</p>
+              <p className="text-sm text-[#8B98A5]">{item.desc}</p>
+            </div>
+          </Link>
+        ))}
+      </div>
+
+      {/* Recent Orders */}
+      <div>
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="font-display text-lg font-semibold text-white">Recent orders</h2>
+          <Link href="/admin/orders">
+            <button className="text-sm text-[#8B98A5] hover:text-white transition-colors">View all</button>
+          </Link>
+        </div>
+
+        <div className="ticket rounded-md">
+          {ordersLoading ? (
+            <div className="p-8 text-center text-[#8B98A5]">Loading orders...</div>
+          ) : recentOrders.length === 0 ? (
+            <div className="p-8 text-center text-[#8B98A5]">No recent orders</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-b border-[#232C36] hover:bg-transparent">
+                    <TableHead className="text-[#8B98A5]">Order</TableHead>
+                    <TableHead className="text-[#8B98A5]">Telegram ID</TableHead>
+                    <TableHead className="text-[#8B98A5]">Chain</TableHead>
+                    <TableHead className="text-[#8B98A5]">NGN amount</TableHead>
+                    <TableHead className="text-[#8B98A5]">Crypto out</TableHead>
+                    <TableHead className="text-[#8B98A5]">Status</TableHead>
+                    <TableHead className="text-[#8B98A5]">Created</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {recentOrders.map((order: Order) => {
+                    const status = orderStatusMeta[order.status] ?? { label: order.status, color: "#8B98A5" };
+                    return (
+                      <TableRow key={order.id} className="border-b border-[#232C36] hover:bg-[#161B22] transition-colors">
+                        <TableCell className="font-data text-xs text-[#8B98A5]">{order.id.slice(0, 8)}...</TableCell>
+                        <TableCell className="font-data text-xs text-[#8B98A5]">{order.user.telegramId.toString()}</TableCell>
+                        <TableCell>
+                          <span className="text-xs text-[#8B98A5] border border-[#232C36] rounded-sm px-2 py-1">
+                            {order.chain}
+                          </span>
+                        </TableCell>
+                        <TableCell className="font-data font-semibold text-white">
+                          ₦{order.fiatAmountNaira.toLocaleString()}
+                        </TableCell>
+                        <TableCell className="font-data font-semibold text-white">
+                          {order.cryptoAmount.toFixed(6)}
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline">{order.chain}</Badge>
+                          <span className="flex items-center gap-2 text-sm text-[#EDEFEA]">
+                            <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: status.color }} />
+                            {status.label}
+                          </span>
                         </TableCell>
-                        <TableCell className="font-semibold">
-                          {order.amount.toFixed(6)}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {order.targetWallet.slice(0, 8)}...{order.targetWallet.slice(-4)}
-                        </TableCell>
-                        <TableCell>
-                          {getStatusBadge(order.status as OrderStatus)}
-                        </TableCell>
-                        <TableCell className="text-sm text-gray-600 dark:text-gray-400">
+                        <TableCell className="text-sm text-[#8B98A5]">
                           {new Date(order.createdAt).toLocaleString()}
                         </TableCell>
-                        <TableCell>
-                          <div className="flex gap-2">
-                            {order.status === "PENDING_LIQUIDITY" && (
-                              <Button size="sm" variant="outline">
-                                <RefreshCw className="h-4 w-4" />
-                              </Button>
-                            )}
-                            {order.status === "FAILED_REFUND_NEEDED" && (
-                              <>
-                                <Button size="sm" variant="outline">
-                                  <RefreshCw className="h-4 w-4" />
-                                </Button>
-                                <Button size="sm" variant="outline">
-                                  <CheckCircle2 className="h-4 w-4" />
-                                </Button>
-                              </>
-                            )}
-                            <Button size="sm" variant="ghost">
-                              Details
-                            </Button>
-                          </div>
-                        </TableCell>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          </div>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </div>
-      </main>
-
-      {/* Footer */}
-      <footer className="border-t bg-white/50 dark:bg-gray-900/50 backdrop-blur-sm mt-16">
-        <div className="container mx-auto px-4 py-8 text-center text-sm text-gray-600 dark:text-gray-400">
-          <p>© 2024 GasBot Admin Portal. Authorized access only.</p>
-        </div>
-      </footer>
-    </div>
+      </div>
+    </>
   );
 }

@@ -17,6 +17,7 @@ enum OrderStatus {
   PENDING_LIQUIDITY
   DISPENSED_SUCCESS
   FAILED_REFUND_NEEDED
+  REFUNDED
 }
 
 enum SupportedChain {
@@ -31,16 +32,67 @@ enum PaymentGateway {
   OPAY
 }
 
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum OfframpStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PROCESSING
+}
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PROCESSED
+}
+
+enum WalletTransactionType {
+  REFERRAL_EARNING
+  BONUS_DEPOSIT
+  OFFRAMP_PAYOUT
+  REFUND
+  WITHDRAWAL
+}
+
+enum WalletTransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
 model User {
-  id         String   @id @default(uuid())
-  telegramId BigInt   @unique
-  username   String?
-  firstName  String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  orders     Order[]
+  id                         String         @id @default(uuid())
+  email                      String?        @unique
+  passwordHash               String?
+  telegramId                 BigInt?        @unique
+  username                   String?
+  firstName                  String?
+  role                       UserRole       @default(USER)
+  status                     String         @default("active")
+  referralCode               String         @unique
+  referredById               String?
+  referrer                   User?          @relation("Referrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals                  User[]         @relation("Referrals")
+  nairaBalance               Float          @default(0.0)
+  unpaidAffiliateBalance     Float          @default(0.0)
+  lastActive                 DateTime?
+  createdAt                  DateTime       @default(now())
+  updatedAt                  DateTime       @updatedAt
+  orders                     Order[]
+  offrampRequests            OfframpRequest[]
+  refundRequests             RefundRequest[]
+  savedBanks                 SavedBank[]
+  walletTransactions         WalletTransaction[]
 
   @@index([telegramId])
+  @@index([email])
+  @@index([referralCode])
+  @@index([referredById])
 }
 
 model Order {
@@ -59,6 +111,7 @@ model Order {
   status         OrderStatus   @default(PENDING_PAYMENT)
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+  refundRequests RefundRequest[]
 
   @@index([userId])
   @@index([status])
@@ -89,4 +142,91 @@ model ChainConfig {
   minAmountNaira Decimal        @db.Decimal(12, 2)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
+}
+
+model OfframpRequest {
+  id                String        @id @default(uuid())
+  userId            String
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token             String
+  amount            Float
+  bybitUid          String
+  bankName          String
+  bankAccountNumber String
+  bankAccountName   String
+  status            OfframpStatus @default(PENDING)
+  proofHash         String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model RefundRequest {
+  id            String       @id @default(uuid())
+  orderId       String
+  order         Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reason        String
+  status        RefundStatus @default(PENDING)
+  adminNotes    String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([userId])
+  @@index([orderId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model SavedBank {
+  id                    String   @id @default(uuid())
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bankCode              String
+  bankName              String
+  accountNumber         String
+  accountName           String
+  paystackRecipientCode String?  @unique
+  isVerified            Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([userId])
+  @@index([accountNumber])
+  @@index([paystackRecipientCode])
+}
+
+model WalletTransaction {
+  id          String                   @id @default(uuid())
+  userId      String
+  user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount      Float
+  type        WalletTransactionType
+  status      WalletTransactionStatus  @default(PENDING)
+  reference   String                   @unique
+  metadata    Json?
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  @@index([userId])
+  @@index([type])
+  @@index([status])
+  @@index([reference])
+  @@index([createdAt])
+}
+
+model AccountLinkCode {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  telegramId  String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([code])
+  @@index([telegramId])
+  @@index([expiresAt])
 }

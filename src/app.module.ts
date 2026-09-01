@@ -13,6 +13,11 @@ import { QueueModule } from './modules/queue/queue.module';
 import { Web3Module } from './modules/web3/web3.module';
 import { OracleModule } from './modules/oracle/oracle.module';
 import { MailModule } from './modules/mail/mail.module';
+import { AdminModule } from './modules/admin/admin.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { OrdersModule } from './modules/orders/orders.module';
+import { UserModule } from './modules/user/user.module';
+import { WalletModule } from './modules/wallet/wallet.module';
 
 @Module({
   imports: [
@@ -34,6 +39,11 @@ import { MailModule } from './modules/mail/mail.module';
     Web3Module,
     OracleModule,
     MailModule,
+    AdminModule,
+    AuthModule,
+    OrdersModule,
+    UserModule,
+    WalletModule,
   ],
   controllers: [AppController],
   providers: [

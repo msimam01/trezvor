@@ -1,10 +1,10 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Bot, session, InlineKeyboard, Context, SessionFlavor } from 'grammy';
-import { 
-  BotCallbackAction, 
-  BotCallbackChain, 
-  BotCallbackAmount, 
+import {
+  BotCallbackAction,
+  BotCallbackChain,
+  BotCallbackAmount,
   BotSessionStep,
   AMOUNT_NAIRA_MAP,
   CHAIN_DISPLAY_NAMES
@@ -16,6 +16,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { OracleService } from '../oracle/oracle.service';
 import { validateWalletAddress, getValidationErrorMessage, ChainType } from './helpers/wallet-validator';
 import { getExplorerUrl } from '../web3/helpers/explorer.helper';
+import { PrismaService } from '../../prisma/prisma.service';
 
 interface BotSessionData {
   step: BotSessionStep;
@@ -40,6 +41,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly settingsService: SettingsService,
     private readonly paymentsService: PaymentsService,
     private readonly oracleService: OracleService,
+    private readonly prisma: PrismaService,
   ) {
     this.botToken = this.configService.get<string>('TELEGRAM_BOT_TOKEN') || '';
     if (!this.botToken) {
@@ -68,6 +70,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.command('orders', this.handleMyOrdersCommand.bind(this));
     this.bot.command('help', this.handleHelpCommand.bind(this));
     this.bot.command('home', this.handleHomeCommand.bind(this));
+    this.bot.command('link', this.handleLinkCommand.bind(this));
+    this.bot.command('ping', this.handlePingCommand.bind(this));
 
     // Register callback query handlers
     this.bot.callbackQuery(BotCallbackAction.ACTION_BUY_GAS, this.handleBuyGas.bind(this));
@@ -91,6 +95,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     // Message handler for wallet address
     this.bot.on('message:text', this.handleTextMessage.bind(this));
+    
+    // Generic message handler for other message types
+    this.bot.on('message', this.handleGenericMessage.bind(this));
 
     // Error handling
     this.bot.catch((err) => {
@@ -137,6 +144,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             PENDING_LIQUIDITY: '⏳',
             DISPENSED_SUCCESS: '🎉',
             FAILED_REFUND_NEEDED: '❌',
+            REFUNDED: '💸',
           }[order.status] || 'ℹ️';
 
           const message = 
@@ -211,12 +219,29 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       
       keyboard.text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
-      await ctx.editMessageText('Select the blockchain network:', { reply_markup: keyboard });
-      await ctx.answerCallbackQuery();
+      const message = 'Select the blockchain network:';
+
+      // Check if this is a callback query or a regular command
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { reply_markup: keyboard });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { reply_markup: keyboard });
+      }
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in ACTION_BUY_GAS handler: ${err.message}`, err.stack);
-      await ctx.answerCallbackQuery({ text: 'Error processing request' });
+      
+      // Only answer callback query if this is a callback
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
     }
   }
 
@@ -234,8 +259,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (!ctx.session.userId) {
-        await ctx.editMessageText('Unable to identify user. Please start over with /start');
-        await ctx.answerCallbackQuery();
+        const message = 'Unable to identify user. Please start over with /start';
+        if (ctx.callbackQuery) {
+          await ctx.editMessageText(message);
+          await ctx.answerCallbackQuery();
+        } else {
+          await ctx.reply(message);
+        }
         return;
       }
 
@@ -246,14 +276,20 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         const keyboard = new InlineKeyboard()
           .text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
-        await ctx.editMessageText(
-          '� <b>My Orders</b>\n\nYou haven\'t placed any gas orders yet!\n\nClick "Buy Micro-Gas" to get started.',
-          { 
+        const message = '📦 <b>My Orders</b>\n\nYou haven\'t placed any gas orders yet!\n\nClick "Buy Micro-Gas" to get started.';
+        
+        if (ctx.callbackQuery) {
+          await ctx.editMessageText(message, { 
             parse_mode: 'HTML',
             reply_markup: keyboard 
-          }
-        );
-        await ctx.answerCallbackQuery();
+          });
+          await ctx.answerCallbackQuery();
+        } else {
+          await ctx.reply(message, { 
+            parse_mode: 'HTML',
+            reply_markup: keyboard 
+          });
+        }
         return;
       }
 
@@ -265,6 +301,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         PENDING_LIQUIDITY: '⏳',
         DISPENSED_SUCCESS: '🎉',
         FAILED_REFUND_NEEDED: '❌',
+        REFUNDED: '💸',
       };
 
       const tokenSymbol = {
@@ -296,15 +333,31 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const keyboard = new InlineKeyboard()
         .text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
-      await ctx.editMessageText(ordersText, { 
-        parse_mode: 'HTML',
-        reply_markup: keyboard 
-      });
-      await ctx.answerCallbackQuery();
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(ordersText, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(ordersText, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+      }
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in ACTION_MY_ORDERS handler: ${err.message}`, err.stack);
-      await ctx.answerCallbackQuery({ text: 'Error processing request' });
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
     }
   }
 
@@ -340,22 +393,40 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const keyboard = new InlineKeyboard()
         .text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
-      await ctx.editMessageText(helpText, { 
-        parse_mode: 'HTML',
-        reply_markup: keyboard 
-      });
-      await ctx.answerCallbackQuery();
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(helpText, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(helpText, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+      }
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in ACTION_HELP handler: ${err.message}`, err.stack);
-      await ctx.answerCallbackQuery({ text: 'Error processing request' });
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
     }
   }
 
   private async handleChainSelection(ctx: BotContext) {
     try {
       if (!ctx.callbackQuery?.data) {
-        await ctx.answerCallbackQuery({ text: 'Invalid callback data' });
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid callback data' });
+        }
         return;
       }
 
@@ -370,7 +441,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
       const selectedChain = chainMap[callbackData];
       if (!selectedChain) {
-        await ctx.answerCallbackQuery({ text: 'Invalid chain selection' });
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid chain selection' });
+        }
         return;
       }
 
@@ -387,19 +460,36 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
         .text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
-      await ctx.editMessageText(`Select amount for ${CHAIN_DISPLAY_NAMES[callbackData as BotCallbackChain]}:`, { reply_markup: keyboard });
-      await ctx.answerCallbackQuery();
+      const message = `Select amount for ${CHAIN_DISPLAY_NAMES[callbackData as BotCallbackChain]}:`;
+      
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { reply_markup: keyboard });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { reply_markup: keyboard });
+      }
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in chain selection handler: ${err.message}`, err.stack);
-      await ctx.answerCallbackQuery({ text: 'Error processing request' });
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
     }
   }
 
   private async handleAmountSelection(ctx: BotContext) {
     try {
       if (!ctx.callbackQuery?.data) {
-        await ctx.answerCallbackQuery({ text: 'Invalid callback data' });
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid callback data' });
+        }
         return;
       }
 
@@ -407,7 +497,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const amount = AMOUNT_NAIRA_MAP[callbackData as BotCallbackAmount];
 
       if (!amount) {
-        await ctx.answerCallbackQuery({ text: 'Invalid amount selection' });
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid amount selection' });
+        }
         return;
       }
 
@@ -416,9 +508,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       if (chain) {
         const chainConfig = await this.settingsService.getChainConfig(chain as any);
         if (amount < chainConfig.minAmountNaira) {
-          await ctx.answerCallbackQuery({ 
-            text: `Minimum order for ${chain} is ₦${chainConfig.minAmountNaira}` 
-          });
+          if (ctx.callbackQuery) {
+            await ctx.answerCallbackQuery({ 
+              text: `Minimum order for ${chain} is ₦${chainConfig.minAmountNaira}` 
+            });
+          }
           return;
         }
       }
@@ -431,12 +525,27 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
         .text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
-      await ctx.editMessageText(`Please reply with your target wallet address for ${chainName}:`, { reply_markup: keyboard });
-      await ctx.answerCallbackQuery();
+      const message = `Please reply with your target wallet address for ${chainName}:`;
+      
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { reply_markup: keyboard });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { reply_markup: keyboard });
+      }
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in amount selection handler: ${err.message}`, err.stack);
-      await ctx.answerCallbackQuery({ text: 'Error processing request' });
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
     }
   }
 
@@ -444,7 +553,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     try {
       const chain = ctx.session.selectedChain;
       if (!chain) {
-        await ctx.answerCallbackQuery({ text: 'Please select a chain first' });
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Please select a chain first' });
+        }
         return;
       }
 
@@ -457,20 +568,34 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
         .text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
-      await ctx.editMessageText(
-        `Enter custom Naira amount (Minimum for ${chain} is ₦${chainConfig.minAmountNaira}):`,
-        { reply_markup: keyboard }
-      );
-      await ctx.answerCallbackQuery();
+      const message = `Enter custom Naira amount (Minimum for ${chain} is ₦${chainConfig.minAmountNaira}):`;
+      
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { reply_markup: keyboard });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { reply_markup: keyboard });
+      }
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in custom amount handler: ${err.message}`, err.stack);
-      await ctx.answerCallbackQuery({ text: 'Error processing request' });
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
     }
   }
 
   private async handleTextMessage(ctx: BotContext) {
     try {
+      this.logger.log(`Received text message from user ${ctx.from?.id}: "${ctx.message?.text}"`);
+      
       if (!ctx.message?.text) {
         await ctx.reply('Please provide valid input.');
         return;
@@ -486,6 +611,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
       // Only process wallet address if we're awaiting wallet address
       if (ctx.session.step !== BotSessionStep.AWAITING_WALLET) {
+        // User sent a message when not expecting input
+        this.logger.log(`User ${ctx.from?.id} sent message in unexpected state: ${ctx.session.step}`);
+        await ctx.reply('Please use the menu buttons or send /start to begin.');
         return;
       }
 
@@ -580,6 +708,21 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const err = error as Error;
       this.logger.error(`Error in text message handler: ${err.message}`, err.stack);
       await ctx.reply('Sorry, something went wrong. Please try again starting with /start');
+    }
+  }
+
+  private async handleGenericMessage(ctx: BotContext) {
+    try {
+      // Handle non-text messages (photos, stickers, etc.)
+      this.logger.log(`Received non-text message from user ${ctx.from?.id}`);
+      
+      const keyboard = new InlineKeyboard()
+        .text('🏠 Main Menu', BotCallbackAction.ACTION_HOME);
+      
+      await ctx.reply('I can only process text messages. Please use the menu buttons or send a command like /start.', { reply_markup: keyboard });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in generic message handler: ${err.message}`, err.stack);
     }
   }
 
@@ -744,6 +887,104 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async handleLinkCommand(ctx: BotContext) {
+    try {
+      if (!ctx.from) {
+        await ctx.reply('Unable to identify user. Please try again.');
+        return;
+      }
+
+      const telegramId = ctx.from.id.toString();
+
+      // Generate 6-digit alphanumeric code
+
+      // Generate 6-digit alphanumeric code
+      const numericPart = Math.floor(100000 + Math.random() * 900000).toString();
+      const code = `G-${numericPart}`;
+
+      // Set expiration to 10 minutes from now
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+      // Check if there's an existing unexpired code for this telegramId
+      const existingCode = await this.prisma.accountLinkCode.findFirst({
+        where: {
+          telegramId,
+          expiresAt: {
+            gt: new Date(),
+          },
+        },
+      });
+
+      if (existingCode) {
+        // Return existing code
+        const finalCode = existingCode.code;
+        const expiresAtMinutes = Math.ceil((existingCode.expiresAt.getTime() - Date.now()) / (1000 * 60));
+
+        const message =
+          `🔗 <b>Account Linking</b>\n\n` +
+          `Your account linking code is:\n\n` +
+          `<code>${finalCode.replace('G-', '')}</code>\n\n` +
+          `Enter this code on your Web Dashboard under Profile Settings within ${expiresAtMinutes} minutes.\n\n` +
+          `⚠️ This code will expire in ${expiresAtMinutes} minutes.\n` +
+          `📱 Don't share this code with anyone!`;
+
+        const keyboard = new InlineKeyboard()
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+        await ctx.reply(message, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        });
+        return;
+      }
+
+      // Save new code
+      const linkCode = await this.prisma.accountLinkCode.create({
+        data: {
+          code,
+          telegramId,
+          expiresAt,
+        },
+      });
+
+      this.logger.log(`Generated link code ${code} for telegramId ${telegramId}`);
+
+      // Format expiration time
+      const expiresAtDate = linkCode.expiresAt;
+      const expiresAtMinutes = Math.ceil((expiresAtDate.getTime() - Date.now()) / (1000 * 60));
+
+      const message =
+        `🔗 <b>Account Linking</b>\n\n` +
+        `Your account linking code is:\n\n` +
+        `<code>${code.replace('G-', '')}</code>\n\n` +
+        `Enter this code on your Web Dashboard under Profile Settings within ${expiresAtMinutes} minutes.\n\n` +
+        `⚠️ This code will expire in ${expiresAtMinutes} minutes.\n` +
+        `📱 Don't share this code with anyone!`;
+
+      const keyboard = new InlineKeyboard()
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      await ctx.reply(message, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in /link command: ${err.message}`, err.stack);
+      await ctx.reply('Sorry, something went wrong generating your link code. Please try again.');
+    }
+  }
+
+  private async handlePingCommand(ctx: BotContext) {
+    try {
+      this.logger.log(`Ping command received from user ${ctx.from?.id}`);
+      await ctx.reply('🏓 Pong! Bot is working correctly.');
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in /ping command: ${err.message}`, err.stack);
+    }
+  }
+
   private async handleBack(ctx: BotContext) {
     try {
       const currentStep = ctx.session.step;
@@ -785,8 +1026,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           
           chainKeyboard.text('🏠 Home', BotCallbackAction.ACTION_HOME);
           
-          await ctx.editMessageText('Select the blockchain network:', { reply_markup: chainKeyboard });
-          await ctx.answerCallbackQuery();
+          const chainMessage = 'Select the blockchain network:';
+          if (ctx.callbackQuery) {
+            await ctx.editMessageText(chainMessage, { reply_markup: chainKeyboard });
+            await ctx.answerCallbackQuery();
+          } else {
+            await ctx.reply(chainMessage, { reply_markup: chainKeyboard });
+          }
           break;
         
         case BotSessionStep.AWAITING_CUSTOM_AMOUNT:
@@ -805,8 +1051,14 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             .text('🏠 Home', BotCallbackAction.ACTION_HOME);
           
           const customChainName = ctx.session.selectedChain;
-          await ctx.editMessageText(`Select amount for ${customChainName}:`, { reply_markup: customAmountKeyboard });
-          await ctx.answerCallbackQuery();
+          const customAmountMessage = `Select amount for ${customChainName}:`;
+          
+          if (ctx.callbackQuery) {
+            await ctx.editMessageText(customAmountMessage, { reply_markup: customAmountKeyboard });
+            await ctx.answerCallbackQuery();
+          } else {
+            await ctx.reply(customAmountMessage, { reply_markup: customAmountKeyboard });
+          }
           break;
         
         case BotSessionStep.AWAITING_WALLET:
@@ -825,8 +1077,14 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             .text('🏠 Home', BotCallbackAction.ACTION_HOME);
           
           const chainName = ctx.session.selectedChain;
-          await ctx.editMessageText(`Select amount for ${chainName}:`, { reply_markup: amountKeyboard });
-          await ctx.answerCallbackQuery();
+          const amountMessage = `Select amount for ${chainName}:`;
+          
+          if (ctx.callbackQuery) {
+            await ctx.editMessageText(amountMessage, { reply_markup: amountKeyboard });
+            await ctx.answerCallbackQuery();
+          } else {
+            await ctx.reply(amountMessage, { reply_markup: amountKeyboard });
+          }
           break;
         
         default:
@@ -835,7 +1093,16 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in ACTION_BACK handler: ${err.message}`, err.stack);
-      await ctx.answerCallbackQuery({ text: 'Error processing request' });
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
     }
   }
 
@@ -844,7 +1111,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const orderId = ctx.session.lastOrderId;
       
       if (!orderId) {
-        await ctx.answerCallbackQuery({ text: 'No order found. Please start a new order.' });
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'No order found. Please start a new order.' });
+        }
         await this.sendMainMenu(ctx);
         return;
       }
@@ -853,7 +1122,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const order = await this.ordersService.findById(orderId);
       
       if (!order) {
-        await ctx.answerCallbackQuery({ text: 'Order not found. Please start a new order.' });
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Order not found. Please start a new order.' });
+        }
         await this.sendMainMenu(ctx);
         return;
       }
@@ -862,7 +1133,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const paymentResult = await this.paymentsService.initializePaystackTransaction(orderId);
       
       if (!paymentResult.authorizationUrl) {
-        await ctx.answerCallbackQuery({ text: 'Failed to initialize payment. Please try again.' });
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Failed to initialize payment. Please try again.' });
+        }
         return;
       }
 
@@ -874,7 +1147,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         .row()
         .text('❌ Cancel', BotCallbackAction.ACTION_CANCEL_ORDER);
 
-      await ctx.answerCallbackQuery({ text: 'Payment page generated!' });
+      if (ctx.callbackQuery) {
+        await ctx.answerCallbackQuery({ text: 'Payment page generated!' });
+      }
       
       await ctx.reply(
         `💳 Payment Ready\n\n` +
@@ -887,7 +1162,16 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in ACTION_PAY_NOW handler: ${err.message}`, err.stack);
-      await ctx.answerCallbackQuery({ text: 'Error processing payment request' });
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing payment request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing payment request. Please try again.');
+      }
     }
   }
 
@@ -896,12 +1180,21 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       // Clear the last order ID from session
       ctx.session.lastOrderId = null;
       
-      await ctx.answerCallbackQuery({ text: 'Order cancelled' });
+      if (ctx.callbackQuery) {
+        await ctx.answerCallbackQuery({ text: 'Order cancelled' });
+      }
       await this.sendMainMenu(ctx);
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in ACTION_CANCEL_ORDER handler: ${err.message}`, err.stack);
-      await ctx.answerCallbackQuery({ text: 'Error cancelling order' });
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error cancelling order' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      }
     }
   }
 
@@ -938,7 +1231,16 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in ACTION_HOME handler: ${err.message}`, err.stack);
-      await ctx.answerCallbackQuery({ text: 'Error processing request' });
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
     }
   }
 
@@ -960,6 +1262,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           { command: 'orders', description: '📜 View My Orders' },
           { command: 'help', description: '❓ Support & Guide' },
           { command: 'home', description: '🏠 Return to Main Menu' },
+          { command: 'link', description: '🔗 Link Web Account' },
         ]);
         this.logger.log('Bot commands registered successfully');
       } catch (telegramError) {
@@ -972,7 +1275,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         this.logger.log('Starting bot in development mode (long-polling)...');
         // Start bot asynchronously without blocking module initialization
         this.bot.start().then(() => {
-          this.logger.log('Bot started successfully');
+          this.logger.log('Bot started successfully and is listening for messages');
         }).catch((startError) => {
           const err = startError as Error;
           this.logger.warn(`Failed to start bot (network issues?): ${err.message}`);

@@ -38,11 +38,18 @@ export class UsersService {
         }
       } else {
         // Create new user
+        const referralCode = `${username?.substring(0, 3).toUpperCase() || 'TG'}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+        
         user = await this.prisma.user.create({
           data: {
             telegramId,
             username,
             firstName,
+            referralCode,
+            role: 'USER',
+            status: 'active',
+            nairaBalance: 0.0,
+            unpaidAffiliateBalance: 0.0,
           },
         });
         this.logger.log(`Created new user with telegramId: ${telegramId}`);
