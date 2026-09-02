@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -9,7 +6,201 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
- 
+
+model User {
+  id                       String              @id @default(uuid())
+  email                    String?             @unique
+  passwordHash             String?
+  telegramId               BigInt?             @unique
+  username                 String?
+  firstName                String?
+  role                     UserRole            @default(USER)
+  status                   String              @default("active")
+  referralCode             String              @unique
+  referredById             String?
+  nairaBalance             Float               @default(0.0)
+  unpaidAffiliateBalance   Float               @default(0.0)
+  lastActive               DateTime?
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
+  hasCompletedFirstDeposit Boolean             @default(false)
+  offrampRequests          OfframpRequest[]
+  orders                   Order[]
+  referralRecordReceived   ReferralRecord?     @relation("ReferralRecordReceived")
+  referralRecordsGiven     ReferralRecord[]    @relation("ReferralRecordsGiven")
+  refundRequests           RefundRequest[]
+  savedBanks               SavedBank[]
+  referrer                 User?               @relation("Referrals", fields: [referredById], references: [id])
+  referrals                User[]              @relation("Referrals")
+  walletTransactions       WalletTransaction[]
+
+  @@index([telegramId])
+  @@index([email])
+  @@index([referralCode])
+  @@index([referredById])
+}
+
+model Order {
+  id              String          @id @default(uuid())
+  userId          String
+  chain           SupportedChain
+  targetWallet    String
+  fiatAmountNaira Decimal         @db.Decimal(12, 2)
+  feeNaira        Decimal         @db.Decimal(12, 2)
+  totalAmount     Decimal         @db.Decimal(12, 2)
+  cryptoAmount    Decimal         @db.Decimal(18, 8)
+  paymentRef      String          @unique
+  paymentGateway  PaymentGateway
+  txHash          String?
+  status          OrderStatus     @default(PENDING_PAYMENT)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refundRequests  RefundRequest[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([paymentRef])
+  @@index([createdAt])
+}
+
+model WebhookLog {
+  id          String         @id @default(uuid())
+  paymentRef  String         @unique
+  gateway     PaymentGateway
+  payload     Json
+  processedAt DateTime       @default(now())
+
+  @@index([paymentRef])
+}
+
+model SystemConfig {
+  id                      String   @id @default("global")
+  platformFeePercent      Decimal  @default(15.00) @db.Decimal(5, 2)
+  updatedAt               DateTime @updatedAt
+  isVirtualAccountEnabled Boolean  @default(false)
+  referralCommissionRate  Decimal  @default(20.00) @db.Decimal(5, 2)
+  usdtBuyRateNgn          Decimal  @default(1550.00) @db.Decimal(10, 2)
+}
+
+model ChainConfig {
+  id             String         @id @default(uuid())
+  chain          SupportedChain @unique
+  isEnabled      Boolean        @default(true)
+  minAmountNaira Decimal        @db.Decimal(12, 2)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+}
+
+model OfframpRequest {
+  id                String            @id @default(uuid())
+  userId            String
+  status            OfframpStatus     @default(PENDING_VERIFICATION)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  bybitUidUsed      String
+  cryptoAmount      Float
+  cryptoAsset       String
+  exchangeRate      Float
+  ngnValue          Float
+  payoutDestination PayoutDestination
+  proofImageUrl     String?
+  rejectionReason   String?
+  savedBankId       String?
+  userBybitTxId     String
+  savedBank         SavedBank?        @relation(fields: [savedBankId], references: [id])
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([savedBankId])
+}
+
+model RefundRequest {
+  id         String       @id @default(uuid())
+  orderId    String
+  userId     String
+  reason     String
+  status     RefundStatus @default(PENDING)
+  adminNotes String?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  order      Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([orderId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model SavedBank {
+  id                    String           @id @default(uuid())
+  userId                String
+  bankCode              String
+  bankName              String
+  accountNumber         String
+  accountName           String
+  paystackRecipientCode String?          @unique
+  isVerified            Boolean          @default(false)
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  offrampRequests       OfframpRequest[]
+  user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([accountNumber])
+  @@index([paystackRecipientCode])
+}
+
+model WalletTransaction {
+  id        String                  @id @default(uuid())
+  userId    String
+  amount    Float
+  type      WalletTransactionType
+  status    WalletTransactionStatus @default(PENDING)
+  reference String                  @unique
+  metadata  Json?
+  createdAt DateTime                @default(now())
+  updatedAt DateTime                @updatedAt
+  user      User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
+  @@index([status])
+  @@index([reference])
+  @@index([createdAt])
+}
+
+model AccountLinkCode {
+  id         String   @id @default(uuid())
+  code       String   @unique
+  telegramId String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([code])
+  @@index([telegramId])
+  @@index([expiresAt])
+}
+
+model ReferralRecord {
+  id          String         @id @default(uuid())
+  referrerId  String
+  refereeId   String         @unique
+  bonusAmount Float          @default(200.0)
+  status      ReferralStatus @default(PENDING)
+  rewardedAt  DateTime?
+  createdAt   DateTime       @default(now())
+  referee     User           @relation("ReferralRecordReceived", fields: [refereeId], references: [id], onDelete: Cascade)
+  referrer    User           @relation("ReferralRecordsGiven", fields: [referrerId], references: [id], onDelete: Cascade)
+
+  @@index([referrerId])
+  @@index([refereeId])
+  @@index([status])
+}
+
 enum OrderStatus {
   PENDING_PAYMENT
   PAYMENT_VERIFIED
@@ -72,198 +263,4 @@ enum WalletTransactionStatus {
 enum ReferralStatus {
   PENDING
   REWARDED
-}
-
-model User {
-  id                         String         @id @default(uuid())
-  email                      String?        @unique
-  passwordHash               String?
-  telegramId                 BigInt?        @unique
-  username                   String?
-  firstName                  String?
-  role                       UserRole       @default(USER)
-  status                     String         @default("active")
-  referralCode               String         @unique
-  referredById               String?
-  referrer                   User?          @relation("Referrals", fields: [referredById], references: [id], onDelete: SetNull)
-  referrals                  User[]         @relation("Referrals")
-  hasCompletedFirstDeposit  Boolean        @default(false)
-  nairaBalance               Float          @default(0.0)
-  unpaidAffiliateBalance     Float          @default(0.0)
-  lastActive                 DateTime?
-  createdAt                  DateTime       @default(now())
-  updatedAt                  DateTime       @updatedAt
-  orders                     Order[]
-  offrampRequests            OfframpRequest[]
-  refundRequests             RefundRequest[]
-  savedBanks                 SavedBank[]
-  walletTransactions         WalletTransaction[]
-  referralRecordsGiven       ReferralRecord[] @relation("ReferralRecordsGiven")
-  referralRecordReceived     ReferralRecord? @relation("ReferralRecordReceived")
-
-  @@index([telegramId])
-  @@index([email])
-  @@index([referralCode])
-  @@index([referredById])
-}
-
-model Order {
-  id             String        @id @default(uuid())
-  userId         String
-  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  chain          SupportedChain
-  targetWallet   String
-  fiatAmountNaira Decimal       @db.Decimal(12, 2)
-  feeNaira       Decimal       @db.Decimal(12, 2)
-  totalAmount    Decimal       @db.Decimal(12, 2)
-  cryptoAmount   Decimal       @db.Decimal(18, 8)
-  paymentRef     String        @unique
-  paymentGateway PaymentGateway
-  txHash         String?
-  status         OrderStatus   @default(PENDING_PAYMENT)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  refundRequests RefundRequest[]
-
-  @@index([userId])
-  @@index([status])
-  @@index([paymentRef])
-  @@index([createdAt])
-}
-
-model WebhookLog {
-  id          String        @id @default(uuid())
-  paymentRef  String        @unique
-  gateway     PaymentGateway
-  payload     Json
-  processedAt DateTime      @default(now())
-
-  @@index([paymentRef])
-}
-
-model SystemConfig {
-  id                      String   @id @default("global")
-  platformFeePercent      Decimal  @default(15.00) @db.Decimal(5, 2)
-  referralCommissionRate  Decimal  @default(20.00) @db.Decimal(5, 2)
-  isVirtualAccountEnabled Boolean  @default(false)
-  usdtBuyRateNgn          Decimal  @default(1550.00) @db.Decimal(10, 2)
-  updatedAt               DateTime @updatedAt
-}
-
-model ChainConfig {
-  id             String         @id @default(uuid())
-  chain          SupportedChain @unique
-  isEnabled      Boolean        @default(true)
-  minAmountNaira Decimal        @db.Decimal(12, 2)
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-}
-
-model OfframpRequest {
-  id                   String            @id @default(uuid())
-  userId               String
-  user                 User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  cryptoAsset          String
-  cryptoAmount         Float
-  ngnValue             Float
-  exchangeRate         Float
-  bybitUidUsed         String
-  userBybitTxId        String
-  proofImageUrl        String?
-  payoutDestination    PayoutDestination
-  savedBankId          String?
-  savedBank            SavedBank?        @relation(fields: [savedBankId], references: [id], onDelete: SetNull)
-  status               OfframpStatus     @default(PENDING_VERIFICATION)
-  rejectionReason      String?
-  createdAt            DateTime          @default(now())
-  updatedAt            DateTime          @updatedAt
-
-  @@index([userId])
-  @@index([status])
-  @@index([createdAt])
-  @@index([savedBankId])
-}
-
-model RefundRequest {
-  id            String       @id @default(uuid())
-  orderId       String
-  order         Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  userId        String
-  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  reason        String
-  status        RefundStatus @default(PENDING)
-  adminNotes    String?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
-
-  @@index([userId])
-  @@index([orderId])
-  @@index([status])
-  @@index([createdAt])
-}
-
-model SavedBank {
-  id                    String           @id @default(uuid())
-  userId                String
-  user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  bankCode              String
-  bankName              String
-  accountNumber         String
-  accountName           String
-  paystackRecipientCode String?          @unique
-  isVerified            Boolean          @default(false)
-  offrampRequests       OfframpRequest[]
-  createdAt             DateTime         @default(now())
-  updatedAt             DateTime         @updatedAt
-
-  @@index([userId])
-  @@index([accountNumber])
-  @@index([paystackRecipientCode])
-}
-
-model WalletTransaction {
-  id          String                   @id @default(uuid())
-  userId      String
-  user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  amount      Float
-  type        WalletTransactionType
-  status      WalletTransactionStatus  @default(PENDING)
-  reference   String                   @unique
-  metadata    Json?
-  createdAt   DateTime                 @default(now())
-  updatedAt   DateTime                 @updatedAt
-
-  @@index([userId])
-  @@index([type])
-  @@index([status])
-  @@index([reference])
-  @@index([createdAt])
-}
-
-model AccountLinkCode {
-  id          String   @id @default(uuid())
-  code        String   @unique
-  telegramId  String
-  expiresAt   DateTime
-  createdAt   DateTime @default(now())
-
-  @@index([code])
-  @@index([telegramId])
-  @@index([expiresAt])
-}
-
-model ReferralRecord {
-  id          String         @id @default(uuid())
-  referrerId  String
-  referrer    User           @relation("ReferralRecordsGiven", fields: [referrerId], references: [id], onDelete: Cascade)
-  refereeId   String         @unique
-  referee     User           @relation("ReferralRecordReceived", fields: [refereeId], references: [id], onDelete: Cascade)
-  bonusAmount Float          @default(200.0)
-  status      ReferralStatus @default(PENDING)
-  rewardedAt  DateTime?
-  createdAt   DateTime       @default(now())
-
-  @@index([referrerId])
-  @@index([refereeId])
-  @@index([status])
 }

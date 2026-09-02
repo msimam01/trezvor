@@ -7,9 +7,9 @@ export interface ReferralStats {
   referralCode: string;
   referralLink: string;
   totalReferred: number;
-  pendingBonuses: number;
-  totalPaidBonuses: number;
-  unpaidBalance: number;
+  totalEarned: number;
+  withdrawableBalance: number;
+  totalPaidOut: number;
 }
 
 interface FirstDepositBonusResult {
@@ -45,6 +45,7 @@ export class ReferralService {
       where: { id: userId },
       include: {
         referralRecordsGiven: true,
+        walletTransactions: true,
       },
     });
 
@@ -54,12 +55,19 @@ export class ReferralService {
 
     const referralRecords = user.referralRecordsGiven;
     const totalReferred = referralRecords.length;
-    const pendingBonuses = referralRecords
-      .filter((record) => record.status === 'PENDING')
-      .reduce((sum, record) => sum + record.bonusAmount, 0);
-    const totalPaidBonuses = referralRecords
-      .filter((record) => record.status === 'REWARDED')
-      .reduce((sum, record) => sum + record.bonusAmount, 0);
+
+    // Total Earned: Sum of all REFERRAL_EARNING wallet transactions for this user
+    const totalEarned = user.walletTransactions
+      .filter((transaction) => transaction.type === 'REFERRAL_EARNING' && transaction.status === 'SUCCESS')
+      .reduce((sum, transaction) => sum + Number(transaction.amount), 0);
+
+    // Withdrawable Balance: Current user.nairaBalance
+    const withdrawableBalance = Number(user.nairaBalance);
+
+    // Total Paid Out: Sum of all completed bank withdrawal transactions
+    const totalPaidOut = user.walletTransactions
+      .filter((transaction) => transaction.type === 'WITHDRAWAL' && transaction.status === 'SUCCESS')
+      .reduce((sum, transaction) => sum + Number(transaction.amount), 0);
 
     const botUsername = this.configService.get<string>('TELEGRAM_BOT_USERNAME') || 'trezvor_bot';
     const referralLink = `https://t.me/${botUsername}?start=${user.referralCode}`;
@@ -68,9 +76,9 @@ export class ReferralService {
       referralCode: user.referralCode,
       referralLink,
       totalReferred,
-      pendingBonuses,
-      totalPaidBonuses,
-      unpaidBalance: user.unpaidAffiliateBalance,
+      totalEarned,
+      withdrawableBalance,
+      totalPaidOut,
     };
   }
 

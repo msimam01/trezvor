@@ -37,6 +37,7 @@ interface BotSessionData {
   withdrawalAmount: number | null; // For withdrawal flow
   withdrawalBankId: string | null; // For withdrawal flow
   addBankFlow: boolean; // Track if user is in add bank flow
+  offrampAddBankFlow: boolean; // Track if user is in off-ramp add bank flow
 }
 
 type BotContext = Context & SessionFlavor<BotSessionData>;
@@ -84,12 +85,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         withdrawalAmount: null,
         withdrawalBankId: null,
         addBankFlow: false,
+        offrampAddBankFlow: false,
       }),
     }));
 
     // Register command handlers
     this.bot.command('start', this.handleStart.bind(this));
-    this.bot.command('buygas', this.handleBuyGasCommand.bind(this));
+    this.bot.command('buy', this.handleBuyGasCommand.bind(this));
+    this.bot.command('buygas', this.handleBuyGasCommand.bind(this)); // Keep for backward compatibility
+    this.bot.command('sell', this.handleSellCryptoCommand.bind(this));
     this.bot.command('orders', this.handleMyOrdersCommand.bind(this));
     this.bot.command('help', this.handleHelpCommand.bind(this));
     this.bot.command('home', this.handleHomeCommand.bind(this));
@@ -423,29 +427,42 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const helpText = 
         '❓ <b>Help & Support</b>\n\n' +
         '🤖 <b>How to use this bot:</b>\n' +
-        '1. Click "Buy Crypto" to start a transaction\n' +
+        '1. Use /buy to start a crypto purchase\n' +
         '2. Select your preferred blockchain (Solana, Base, or TON)\n' +
         '3. Choose the amount you want to purchase\n' +
         '4. Provide your wallet address\n' +
         '5. Complete payment via the payment gateway\n' +
         '6. Receive your gas tokens automatically\n\n' +
-        '❓ <b>Frequently Asked Questions:</b>\n\n' +
-        '<b>⏱️ Transaction Delays:</b>\n' +
-        '• Normal processing time: 5-15 minutes\n' +
-        '• During high network congestion: up to 30 minutes\n' +
-        '• If delayed beyond 30 minutes, contact support\n\n' +
-        '<b>💼 Wallet Balance Guidance:</b>\n' +
-        '• Ensure your wallet has enough gas for the transaction\n' +
-        '• Solana: ~0.00001 SOL buffer recommended\n' +
-        '• Base: ~0.0001 ETH buffer recommended\n' +
-        '• TON: ~0.01 TON buffer recommended\n\n' +
+        '💰 <b>Sell USDT (Bybit Off-Ramp):</b>\n' +
+        '1. Use /sell to start the off-ramp process\n' +
+        '2. Send USDT to our corporate Bybit UID\n' +
+        '3. Enter the amount and transaction ID\n' +
+        '4. Choose payout destination (Wallet or Bank)\n' +
+        '5. Receive NGN payout after verification\n\n' +
+        '🏦 <b>Bank Management:</b>\n' +
+        '• Use /bank to add your bank account\n' +
+        '• Supports instant Paystack account resolution\n' +
+        '• Required for withdrawals and off-ramp payouts\n\n' +
+        '💵 <b>Wallet:</b>\n' +
+        '• Use /wallet to view your Naira balance\n' +
+        '• Withdraw to saved bank accounts\n' +
+        '• View referral earnings\n\n' +
+        '🎁 <b>Referrals:</b>\n' +
+        '• Use /ref to get your referral link\n' +
+        '• Earn commission on platform fees\n' +
+        '• Track your referral stats\n\n' +
         '🆘 <b>Need Support?</b>\n' +
-        'Contact our support team: @YourGasBotSupport\n\n' +
-        '📧 <b>Email Support:</b>\n' +
-        'support@gasbot.com\n\n' +
-        '⚡ <b>Quick Links:</b>\n' +
-        '🏠 Home - Return to main menu\n' +
-        '📦 My Orders - View your order history';
+        'Contact Admin:\n' +
+        '• Telegram: @GasBotAdmin\n' +
+        '• WhatsApp: +234XXXXXXXXXX\n\n' +
+        '⚡ <b>Quick Commands:</b>\n' +
+        '/buy - Buy Gas (SOL, TON, BASE)\n' +
+        '/sell - Sell USDT (Bybit Off-Ramp)\n' +
+        '/wallet - View Naira Balance & Withdraw\n' +
+        '/bank - Manage Saved Bank Accounts\n' +
+        '/ref - Referral Stats & Link\n' +
+        '/link - Link Account to Web Dashboard\n' +
+        '/help - Contact Support & Instructions';
       
       const keyboard = new InlineKeyboard()
         .text('🏠 Home', BotCallbackAction.ACTION_HOME);
@@ -690,6 +707,18 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      // Handle bank name input
+      if (ctx.session.step === BotSessionStep.AWAITING_BANK_NAME_INPUT) {
+        await this.handleBankNameInput(ctx, text);
+        return;
+      }
+
+      // Handle bank name search when in bank selection step
+      if (ctx.session.step === BotSessionStep.AWAITING_BANK_SELECTION) {
+        await this.handleBankNameInput(ctx, text);
+        return;
+      }
+
       // Only process wallet address if we're awaiting wallet address
       if (ctx.session.step !== BotSessionStep.AWAITING_WALLET) {
         // User sent a message when not expecting input
@@ -822,13 +851,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      // Validate minimum amount (10 USDT)
-      if (amount < 10) {
+      // Validate minimum amount (1 USDT)
+      if (amount < 1) {
         const keyboard = new InlineKeyboard()
           .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
           .text('🏠 Home', BotCallbackAction.ACTION_HOME);
         
-        await ctx.reply('❌ Minimum amount is 10 USDT. Please enter a higher amount.', { reply_markup: keyboard });
+        await ctx.reply('❌ Minimum amount is 1 USDT. Please enter a higher amount.', { reply_markup: keyboard });
         return;
       }
 
@@ -981,10 +1010,26 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         ctx.session.selectedBankCode
       );
 
-      // Reset session
+      // Check if this was an off-ramp bank addition flow
+      const isOfframpFlow = ctx.session.offrampAddBankFlow;
+      
+      // Save off-ramp session data before resetting
+      const offrampSessionData = {
+        sellCryptoAsset: ctx.session.sellCryptoAsset,
+        sellCryptoAmount: ctx.session.sellCryptoAmount,
+        sellTxId: ctx.session.sellTxId,
+      };
+
+      // Reset session (but preserve userId)
+      const userId = ctx.session.userId;
       ctx.session.step = BotSessionStep.IDLE;
       ctx.session.selectedBankCode = null;
       ctx.session.addBankFlow = false;
+      ctx.session.offrampAddBankFlow = false;
+      ctx.session.sellCryptoAsset = null;
+      ctx.session.sellCryptoAmount = null;
+      ctx.session.sellTxId = null;
+      ctx.session.userId = userId;
 
       const message = 
         `✅ <b>Bank Account Added Successfully</b>\n\n` +
@@ -1004,6 +1049,27 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         parse_mode: 'HTML',
         reply_markup: keyboard 
       });
+
+      // If this was an off-ramp flow, automatically continue with the saved bank
+      if (isOfframpFlow) {
+        // Get the newly created bank
+        const savedBank = await this.prisma.savedBank.findFirst({
+          where: {
+            userId: ctx.session.userId,
+            accountNumber: accountNumber,
+          },
+        });
+
+        if (savedBank) {
+          // Restore off-ramp session data
+          ctx.session.sellCryptoAsset = offrampSessionData.sellCryptoAsset;
+          ctx.session.sellCryptoAmount = offrampSessionData.sellCryptoAmount;
+          ctx.session.sellTxId = offrampSessionData.sellTxId;
+          
+          // Continue with off-ramp submission using the new bank
+          await this.submitOfframpRequest(ctx, 'SAVED_BANK', savedBank.id);
+        }
+      }
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in account number input handler: ${err.message}`, err.stack);
@@ -1078,6 +1144,58 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async handleBankNameInput(ctx: BotContext, text: string) {
+    try {
+      const bankNameInput = text.trim().toLowerCase();
+      
+      if (!bankNameInput) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+        
+        await ctx.reply('❌ Invalid bank name. Please enter a valid bank name.', { reply_markup: keyboard });
+        return;
+      }
+
+      // Fetch banks from wallet service
+      const banks = await this.walletService.getBanks();
+      
+      // Search for banks matching the input
+      const matchedBanks = banks.filter(bank => 
+        bank.name.toLowerCase().includes(bankNameInput) || 
+        bank.code.toLowerCase().includes(bankNameInput)
+      );
+
+      if (matchedBanks.length === 0) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+        
+        await ctx.reply('❌ No matching banks found. Please try again or select from the list.', { reply_markup: keyboard });
+        return;
+      }
+
+      // Build keyboard with matched banks (limit to first 10)
+      const keyboard = new InlineKeyboard();
+      matchedBanks.slice(0, 10).forEach((bank, index) => {
+        keyboard.text(bank.name, `BANK_CODE_${bank.code}`);
+        if ((index + 1) % 2 === 0 || index === Math.min(matchedBanks.length, 10) - 1) {
+          keyboard.row();
+        }
+      });
+      keyboard.text('⬅️ Back', BotCallbackAction.ACTION_BACK);
+      keyboard.text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      const message = `Found ${matchedBanks.length} matching bank(s). Select your bank:`;
+
+      await ctx.reply(message, { reply_markup: keyboard });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in bank name input handler: ${err.message}`, err.stack);
+      await ctx.reply('Sorry, something went wrong. Please try again.');
+    }
+  }
+
   private async handleBuyGasCommand(ctx: BotContext) {
     try {
       if (!ctx.from) {
@@ -1100,7 +1218,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       await this.handleBuyGas(ctx);
     } catch (error) {
       const err = error as Error;
-      this.logger.error(`Error in /buygas command: ${err.message}`, err.stack);
+      this.logger.error(`Error in /buy command: ${err.message}`, err.stack);
       await ctx.reply('Sorry, something went wrong. Please try again.');
     }
   }
@@ -1274,6 +1392,33 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async handleSellCryptoCommand(ctx: BotContext) {
+    try {
+      if (!ctx.from) {
+        await ctx.reply('Unable to identify user. Please try again.');
+        return;
+      }
+
+      const telegramId = BigInt(ctx.from.id);
+      const username = ctx.from.username;
+      const firstName = ctx.from.first_name;
+
+      // Find or create user and store userId
+      const user = await this.usersService.findOrCreateUser({
+        telegramId,
+        username,
+        firstName,
+      });
+
+      ctx.session.userId = user.id;
+      await this.handleSellCrypto(ctx);
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in /sell command: ${err.message}`, err.stack);
+      await ctx.reply('Sorry, something went wrong. Please try again.');
+    }
+  }
+
   private async handlePingCommand(ctx: BotContext) {
     try {
       this.logger.log(`Ping command received from user ${ctx.from?.id}`);
@@ -1310,15 +1455,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const referralLink = `https://t.me/${botUsername}?start=${user.referralCode}`;
 
       const message =
-        `🎁 <b>Your Referral Stats</b>\n\n` +
-        `📋 <b>Referral Code:</b> <code>${user.referralCode}</code>\n` +
-        `🔗 <b>Referral Link:</b> ${referralLink}\n\n` +
-        `👥 <b>Total Referred:</b> ${stats.totalReferred}\n` +
-        `💰 <b>Pending Bonuses:</b> ₦${stats.pendingBonuses}\n` +
-        `✅ <b>Total Paid Bonuses:</b> ₦${stats.totalPaidBonuses}\n` +
-        `💵 <b>Unpaid Balance:</b> ₦${stats.unpaidBalance}\n\n` +
-        `📢 <b>How it works:</b>\n` +
-        `Share your referral link with friends. When they make their first deposit, you earn ₦200!`;
+        `📋 Your Referral Stats\n\n` +
+        `• Referral Code: ${user.referralCode}\n` +
+        `• Referral Link: ${referralLink}\n\n` +
+        `👥 Total Referred: ${stats.totalReferred}\n` +
+        `💰 Total Earned: ₦${stats.totalEarned.toLocaleString()}\n` +
+        `💵 Withdrawable Balance: ₦${stats.withdrawableBalance.toLocaleString()}\n` +
+        `✅ Total Paid Out: ₦${stats.totalPaidOut.toLocaleString()}\n\n` +
+        `📢 How it works:\n` +
+        `Share your referral link with friends. Earn a percentage commission on platform fees every time they buy gas!`;
 
       const keyboard = new InlineKeyboard()
         .url('📤 Share Link', `https://t.me/share/url?url=${encodeURIComponent(referralLink)}&text=Join%20GasBot%20and%20get%20instant%20crypto%20gas!`)
@@ -1391,6 +1536,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
       ctx.session.step = BotSessionStep.AWAITING_BANK_SELECTION;
       ctx.session.addBankFlow = true;
+      ctx.session.offrampAddBankFlow = false;
 
       // Fetch banks from wallet service
       const banks = await this.walletService.getBanks();
@@ -1406,7 +1552,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       keyboard.text('⬅️ Back', BotCallbackAction.ACTION_BACK);
       keyboard.text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
-      const message = '🏦 <b>Add Bank Account</b>\n\nSelect your bank from the list below:';
+      const message = '🏦 <b>Add Bank Account</b>\n\nSelect your bank from the list below, or type the bank name to search:';
 
       if (ctx.callbackQuery) {
         await ctx.editMessageText(message, { 
@@ -1846,7 +1992,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const keyboard = new InlineKeyboard()
       .text('⛽ Buy Crypto', BotCallbackAction.ACTION_BUY_GAS)
       .row()
-      .text('💰 Sell Crypto (Bybit UID)', BotCallbackAction.ACTION_SELL_CRYPTO)
+      .text('💰 Sell USDT', BotCallbackAction.ACTION_SELL_CRYPTO)
       .row()
       .text('💵 My Wallet', BotCallbackAction.ACTION_WALLET)
       .text('📜 My Orders', BotCallbackAction.ACTION_MY_ORDERS)
@@ -1923,7 +2069,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         `━━━━━━━━━━━━━━━━━━\n` +
         `⚠️ <b>Important:</b>\n` +
         `• Only USDT is supported\n` +
-        `• Minimum: 10 USDT\n` +
+        `• Minimum: 1 USDT\n` +
         `• Rate based on admin settings\n` +
         `• Payout after admin verification\n\n` +
         `Please enter the amount of USDT you sent:`;
@@ -2165,14 +2311,21 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       });
 
       if (!user || user.savedBanks.length === 0) {
+        // Off-Ramp Bank Intercept: Prompt user to add bank account
+        ctx.session.offrampAddBankFlow = true;
+        ctx.session.step = BotSessionStep.AWAITING_BANK_SELECTION;
+
         const keyboard = new InlineKeyboard()
           .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
           .text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
         await ctx.reply(
-          '❌ You have no saved bank accounts. Please add a bank account on the web dashboard first.',
+          '❌ You have no saved bank accounts. Please add a bank account to continue with the payout.',
           { reply_markup: keyboard }
         );
+        
+        // Automatically start the bank addition flow
+        await this.handleBank(ctx);
         return;
       }
 
@@ -2241,6 +2394,19 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
       const offrampRequest = response.data;
 
+      // Determine payout destination details
+      let destinationDetails = '';
+      if (payoutDestination === 'INTERNAL_WALLET') {
+        destinationDetails = 'Internal Wallet';
+      } else if (savedBankId) {
+        const savedBank = await this.prisma.savedBank.findUnique({
+          where: { id: savedBankId },
+        });
+        if (savedBank) {
+          destinationDetails = `${savedBank.bankName} - ${savedBank.accountNumber} (${savedBank.accountName})`;
+        }
+      }
+
       // Reset session
       ctx.session.step = BotSessionStep.IDLE;
       ctx.session.sellCryptoAsset = null;
@@ -2248,17 +2414,16 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       ctx.session.sellTxId = null;
 
       const message = 
-        `✅ <b>Off-Ramp Request Submitted</b>\n\n` +
-        `━━━━━━━━━━━━━━━━━━\n` +
-        `💰 <b>Amount:</b> ${cryptoAmount} ${cryptoAsset}\n` +
-        `💵 <b>NGN Value:</b> ₦${offrampRequest.ngnValue.toLocaleString()}\n` +
-        `📈 <b>Rate:</b> ₦${offrampRequest.exchangeRate.toLocaleString()}\n` +
-        `🏦 <b>Payout:</b> ${payoutDestination}\n` +
-        `📝 <b>Status:</b> Pending Verification\n\n` +
-        `━━━━━━━━━━━━━━━━━━\n` +
-        `⏳ Your request will be reviewed by our admin team.\n` +
-        `💵 You'll receive NGN payout after verification.\n\n` +
-        `📜 Request ID: <code>${offrampRequest.id.substring(0, 8)}...</code>`;
+        `⏳ Off-Ramp Submitted for Verification!\n\n` +
+        `• Amount Sent: ${cryptoAmount} USDT\n` +
+        `• Payout NGN Value: ₦${offrampRequest.ngnValue.toLocaleString()}\n` +
+        `• Payout Destination: ${destinationDetails}\n` +
+        `• Transaction ID: ${userBybitTxId}\n\n` +
+        `Your submission is being reviewed by our team. Payouts are processed promptly upon confirmation on Bybit.\n\n` +
+        `💬 Need Help or Quick Approval?\n` +
+        `Contact Admin:\n` +
+        `• Telegram: @GasBotAdmin\n` +
+        `• WhatsApp: +234XXXXXXXXXX`;
 
       const keyboard = new InlineKeyboard()
         .text('🏠 Home', BotCallbackAction.ACTION_HOME);
@@ -2287,14 +2452,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       // Register bot commands with Telegram (with error handling)
       try {
         await this.bot.api.setMyCommands([
-          { command: 'start', description: 'Main Menu & Home' },
-          { command: 'buygas', description: '⛽ Buy Crypto' },
-          { command: 'orders', description: '📜 View My Orders' },
-          { command: 'help', description: '❓ Support & Guide' },
-          { command: 'home', description: '🏠 Return to Main Menu' },
-          { command: 'link', description: '🔗 Link Web Account' },
-          { command: 'bank', description: '🏦 Add Bank Account' },
-          { command: 'wallet', description: '💰 View Wallet' },
+          { command: 'buy', description: 'Buy Gas (SOL, TON, BASE)' },
+          { command: 'sell', description: 'Sell USDT (Bybit Off-Ramp)' },
+          { command: 'wallet', description: 'View Naira Balance & Withdraw' },
+          { command: 'bank', description: 'Manage Saved Bank Accounts' },
+          { command: 'ref', description: 'Referral Stats & Link' },
+          { command: 'link', description: 'Link Account to Web Dashboard' },
+          { command: 'help', description: 'Contact Support & Instructions' },
         ]);
         this.logger.log('Bot commands registered successfully');
       } catch (telegramError) {

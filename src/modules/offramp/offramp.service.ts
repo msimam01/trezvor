@@ -18,7 +18,6 @@ import {
 export class OfframpService {
   private readonly logger = new Logger(OfframpService.name);
   private readonly corporateBybitUid: string;
-  private readonly quoteLockDurationMinutes = 10;
   private readonly telegramBotToken: string;
 
   constructor(
@@ -34,7 +33,7 @@ export class OfframpService {
 
   /**
    * Create an off-ramp request
-   * Calculates NGN payout based on active parallel market rate, locks quote for 10 minutes
+   * Calculates NGN payout based on active parallel market rate
    */
   async createOfframpRequest(
     userId: string,
