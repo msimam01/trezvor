@@ -8,7 +8,7 @@ import { api } from "@/lib/api";
 
 export default function AdminOfframpPage() {
   const queryClient = useQueryClient();
-  const [statusFilter, setStatusFilter] = useState<string>("PENDING");
+  const [statusFilter, setStatusFilter] = useState<string>("PENDING_VERIFICATION");
 
   const { data: offrampData, isLoading } = useQuery({
     queryKey: ["admin-offramp", statusFilter],
@@ -44,10 +44,9 @@ export default function AdminOfframpPage() {
   };
 
   const statusColors = {
-    PENDING: "bg-yellow-900/20 text-yellow-400 border-yellow-800",
+    PENDING_VERIFICATION: "bg-yellow-900/20 text-yellow-400 border-yellow-800",
     APPROVED: "bg-green-900/20 text-green-400 border-green-800",
     REJECTED: "bg-red-900/20 text-red-400 border-red-800",
-    PROCESSING: "bg-blue-900/20 text-blue-400 border-blue-800",
   };
 
   return (
@@ -58,7 +57,7 @@ export default function AdminOfframpPage() {
       </div>
 
       <div className="flex gap-2 mb-6">
-        {["PENDING", "APPROVED", "REJECTED", "PROCESSING"].map((status) => (
+        {["PENDING_VERIFICATION", "APPROVED", "REJECTED"].map((status) => (
           <Button
             key={status}
             variant={statusFilter === status ? "default" : "outline"}
@@ -76,11 +75,11 @@ export default function AdminOfframpPage() {
 
       {isLoading ? (
         <p className="text-[#a1a1aa]">Loading offramp requests...</p>
-      ) : offrampData?.requests.length === 0 ? (
+      ) : !offrampData?.requests || offrampData.requests.length === 0 ? (
         <p className="text-[#a1a1aa]">No offramp requests found</p>
       ) : (
         <div className="space-y-4">
-          {offrampData?.requests.map((request: any) => (
+          {offrampData.requests.map((request: any) => (
             <div key={request.id} className="bg-[#09090b] border border-[#1f1f1f] rounded-lg p-6">
               <div className="flex items-start justify-between mb-4">
                 <div>
@@ -90,10 +89,10 @@ export default function AdminOfframpPage() {
                     </span>
                     <span className="text-sm text-[#52525b]">{request.id.slice(0, 8)}...</span>
                   </div>
-                  <p className="text-lg font-bold text-white">{request.amount} {request.token}</p>
-                  <p className="text-sm text-[#a1a1aa]">{request.user.username || request.user.firstName}</p>
+                  <p className="text-lg font-bold text-white">{request.cryptoAmount} {request.cryptoAsset}</p>
+                  <p className="text-sm text-[#a1a1aa]">{request.user?.username || request.user?.firstName || 'Unknown User'}</p>
                 </div>
-                {request.status === "PENDING" && (
+                {request.status === "PENDING_VERIFICATION" && (
                   <div className="flex gap-2">
                     <Button
                       onClick={() => handleApprove(request.id)}
@@ -101,7 +100,7 @@ export default function AdminOfframpPage() {
                       className="bg-green-600 hover:bg-green-700 text-white"
                     >
                       <Check className="h-4 w-4 mr-2" />
-                      Approve
+                      Approve & Pay NGN
                     </Button>
                     <Button
                       onClick={() => handleReject(request.id)}
@@ -117,25 +116,46 @@ export default function AdminOfframpPage() {
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                 <div>
-                  <p className="text-[#a1a1aa]">Bybit UID</p>
-                  <p className="text-white font-medium">{request.bybitUid}</p>
+                  <p className="text-[#a1a1aa]">Crypto Asset</p>
+                  <p className="text-white font-medium">{request.cryptoAsset}</p>
                 </div>
                 <div>
-                  <p className="text-[#a1a1aa]">Bank Name</p>
-                  <p className="text-white font-medium">{request.bankName}</p>
+                  <p className="text-[#a1a1aa]">Crypto Amount</p>
+                  <p className="text-white font-medium">{request.cryptoAmount}</p>
                 </div>
                 <div>
-                  <p className="text-[#a1a1aa]">Account Number</p>
-                  <p className="text-white font-medium">{request.bankAccountNumber}</p>
+                  <p className="text-[#a1a1aa]">NGN Value</p>
+                  <p className="text-white font-medium">₦{request.ngnValue?.toLocaleString() || '0'}</p>
                 </div>
                 <div>
-                  <p className="text-[#a1a1aa]">Account Name</p>
-                  <p className="text-white font-medium">{request.bankAccountName}</p>
+                  <p className="text-[#a1a1aa]">Exchange Rate</p>
+                  <p className="text-white font-medium">₦{request.exchangeRate?.toLocaleString() || '0'}</p>
                 </div>
+                <div>
+                  <p className="text-[#a1a1aa]">Bybit UID Used</p>
+                  <p className="text-white font-medium">{request.bybitUidUsed}</p>
+                </div>
+                <div>
+                  <p className="text-[#a1a1aa]">User Bybit Tx ID</p>
+                  <p className="text-white font-medium">{request.userBybitTxId}</p>
+                </div>
+                <div>
+                  <p className="text-[#a1a1aa]">Payout Destination</p>
+                  <p className="text-white font-medium">{request.payoutDestination}</p>
+                </div>
+                {request.savedBank && (
+                  <div>
+                    <p className="text-[#a1a1aa]">Bank Details</p>
+                    <p className="text-white font-medium">{request.savedBank.bankName} - {request.savedBank.accountNumber}</p>
+                  </div>
+                )}
               </div>
 
               <div className="mt-4 pt-4 border-t border-[#1f1f1f] text-xs text-[#52525b]">
                 <p>Submitted: {new Date(request.createdAt).toLocaleString()}</p>
+                {request.rejectionReason && (
+                  <p className="mt-1 text-red-400">Rejection Reason: {request.rejectionReason}</p>
+                )}
               </div>
             </div>
           ))}

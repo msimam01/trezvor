@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, UseGuards, Request, HttpException, HttpStatus, Logger, Param } from '@nestjs/common';
+import { Controller, Post, Get, Body, UseGuards, Request, HttpException, HttpStatus, Logger, Param, Patch } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
@@ -56,7 +56,7 @@ export class AuthController {
       },
     });
 
-    const payload = { sub: user.id, email: user.email, role: user.role, isAdmin: false };
+    const payload = { sub: user.id, email: user.email, role: user.role, isAdmin: user.role === 'ADMIN' };
     return {
       access_token: await this.jwtService.signAsync(payload),
       user: {
@@ -172,6 +172,27 @@ export class AuthController {
       };
     }
     throw new HttpException('Invalid admin secret', HttpStatus.UNAUTHORIZED);
+  }
+
+  @Post('admin/set-admin')
+  async setAdmin(@Body() body: { secret: string; userId: string }) {
+    if (body.secret !== process.env.ADMIN_SECRET) {
+      throw new HttpException('Invalid admin secret', HttpStatus.UNAUTHORIZED);
+    }
+
+    const user = await this.prisma.user.update({
+      where: { id: body.userId },
+      data: { isAdmin: true, role: 'ADMIN' },
+    });
+    return {
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        isAdmin: user.role === 'ADMIN',
+        role: user.role,
+      },
+    };
   }
 
   @Post('telegram/generate-link-code')

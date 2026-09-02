@@ -23,6 +23,8 @@ export default function AdminSettingsPage() {
   const [feeSettings, setFeeSettings] = useState<FeeSettings>({
     platformFeePercentage: 5,
     maxFeeCap: 200,
+    referralCommissionRate: 20,
+    isVirtualAccountEnabled: false,
   });
   const [liquidityThresholds, setLiquidityThresholds] = useState<{
     SOLANA: { minBalance: number; alertThreshold: number };
@@ -40,7 +42,12 @@ export default function AdminSettingsPage() {
   useEffect(() => {
     if (settings && !isLoading) {
       if (settings.feeSettings) {
-        setFeeSettings(settings.feeSettings);
+        setFeeSettings({
+          platformFeePercentage: settings.feeSettings.platformFeePercentage ?? 5,
+          maxFeeCap: settings.feeSettings.maxFeeCap ?? 200,
+          referralCommissionRate: settings.feeSettings.referralCommissionRate ?? 20,
+          isVirtualAccountEnabled: settings.feeSettings.isVirtualAccountEnabled ?? false,
+        });
       }
       if (settings.liquidityThresholds) {
         setLiquidityThresholds(settings.liquidityThresholds);
@@ -48,17 +55,19 @@ export default function AdminSettingsPage() {
     }
   }, [settings, isLoading]);
 
-  const handleFeeSettingsChange = (field: keyof FeeSettings, value: number) => {
-    if (!isNaN(value)) {
-      setFeeSettings((prev) => ({ ...prev, [field]: value }));
+  const handleFeeSettingsChange = (field: keyof FeeSettings, value: string) => {
+    const numValue = value === '' ? 0 : parseFloat(value);
+    if (!isNaN(numValue)) {
+      setFeeSettings((prev) => ({ ...prev, [field]: numValue }));
     }
   };
 
-  const handleLiquidityThresholdChange = (chain: string, field: 'minBalance' | 'alertThreshold', value: number) => {
-    if (!isNaN(value)) {
+  const handleLiquidityThresholdChange = (chain: string, field: 'minBalance' | 'alertThreshold', value: string) => {
+    const numValue = value === '' ? 0 : parseFloat(value);
+    if (!isNaN(numValue)) {
       setLiquidityThresholds((prev) => ({
         ...prev,
-        [chain]: { ...prev[chain as keyof typeof prev], [field]: value }
+        [chain]: { ...prev[chain as keyof typeof prev], [field]: numValue }
       }));
     }
   };
@@ -71,16 +80,26 @@ export default function AdminSettingsPage() {
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     },
+    onError: (error) => {
+      console.error('Failed to save settings:', error);
+      alert('Failed to save settings. Please try again.');
+    },
   });
 
   const handleSaveSettings = async () => {
     setIsSaving(true);
-    const platformSettings: PlatformSettings = {
-      feeSettings,
-      liquidityThresholds: liquidityThresholds as any, // Type casting to match backend structure
-    };
-    await saveMutation.mutateAsync(platformSettings);
-    setIsSaving(false);
+    try {
+      const platformSettings: PlatformSettings = {
+        feeSettings,
+        liquidityThresholds: liquidityThresholds as any, // Type casting to match backend structure
+      };
+      console.log('Saving settings:', platformSettings);
+      await saveMutation.mutateAsync(platformSettings);
+    } catch (error) {
+      console.error('Error saving settings:', error);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -131,7 +150,7 @@ export default function AdminSettingsPage() {
                       max="100"
                       step="0.1"
                       value={feeSettings.platformFeePercentage}
-                      onChange={(e) => handleFeeSettingsChange("platformFeePercentage", parseFloat(e.target.value))}
+                      onChange={(e) => handleFeeSettingsChange("platformFeePercentage", e.target.value)}
                       className={`max-w-xs ${inputClass}`}
                     />
                     <span className="text-[#8B98A5]">%</span>
@@ -151,11 +170,31 @@ export default function AdminSettingsPage() {
                       min="0"
                       step="1"
                       value={feeSettings.maxFeeCap}
-                      onChange={(e) => handleFeeSettingsChange("maxFeeCap", parseFloat(e.target.value))}
+                      onChange={(e) => handleFeeSettingsChange("maxFeeCap", e.target.value)}
                       className={`max-w-xs ${inputClass}`}
                     />
                   </div>
                   <p className="text-xs text-[#4A5560]">The most NGN that can be charged on a single order</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="referralCommissionRate" className="text-[#EDEFEA]">
+                    Referral commission rate (%)
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="referralCommissionRate"
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.1"
+                      value={feeSettings.referralCommissionRate}
+                      onChange={(e) => handleFeeSettingsChange("referralCommissionRate", e.target.value)}
+                      className={`max-w-xs ${inputClass}`}
+                    />
+                    <span className="text-[#8B98A5]">%</span>
+                  </div>
+                  <p className="text-xs text-[#4A5560]">Percentage of platform fee paid to referrers — 20 means 20% of platform fee</p>
                 </div>
 
                 <div className="border border-dashed border-[#232C36] rounded-md p-4">
@@ -206,7 +245,7 @@ export default function AdminSettingsPage() {
                           step="0.0001"
                           value={threshold.minBalance}
                           onChange={(e) =>
-                            handleLiquidityThresholdChange(chain, "minBalance", parseFloat(e.target.value))
+                            handleLiquidityThresholdChange(chain, "minBalance", e.target.value)
                           }
                           className={inputClass}
                         />
@@ -224,7 +263,7 @@ export default function AdminSettingsPage() {
                           step="0.0001"
                           value={threshold.alertThreshold}
                           onChange={(e) =>
-                            handleLiquidityThresholdChange(chain, "alertThreshold", parseFloat(e.target.value))
+                            handleLiquidityThresholdChange(chain, "alertThreshold", e.target.value)
                           }
                           className={inputClass}
                         />

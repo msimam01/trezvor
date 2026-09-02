@@ -104,8 +104,8 @@ export default function AdminOrdersPage() {
     chain: order.chain,
     status: order.status,
     targetWallet: order.targetWallet,
-    ngnPaid: order.fiatAmountNaira,
-    cryptoOutput: order.cryptoAmount,
+    ngnPaid: Number(order.fiatAmountNaira),
+    cryptoOutput: Number(order.cryptoAmount),
     explorerUrl: order.txHash ? `https://explorer.com/tx/${order.txHash}` : null, // This would need chain-specific logic
     createdAt: order.createdAt,
     userId: order.userId,
@@ -255,7 +255,7 @@ export default function AdminOrdersPage() {
                           ₦{order.ngnPaid.toLocaleString()}
                         </TableCell>
                         <TableCell className="font-data font-semibold text-white">
-                          {order.cryptoOutput.toFixed(6)}
+                          {Number(order.cryptoOutput).toFixed(6)}
                         </TableCell>
                         <TableCell className="text-sm text-[#8B98A5]">
                           {new Date(order.createdAt).toLocaleDateString()}

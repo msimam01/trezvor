@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards, Logger } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminGuard } from './admin.guard';
@@ -6,6 +6,8 @@ import { AdminGuard } from './admin.guard';
 @Controller('admin')
 @UseGuards(JwtAuthGuard, AdminGuard)
 export class AdminController {
+  private readonly logger = new Logger(AdminController.name);
+
   constructor(private readonly adminService: AdminService) {}
 
   @Get('vault-balances')
@@ -68,8 +70,9 @@ export class AdminController {
     return this.adminService.getSettings();
   }
 
-  @Post('settings')
+  @Patch('settings')
   async updateSettings(@Body() settings: any) {
+    this.logger.log(`Updating settings: ${JSON.stringify(settings)}`);
     return this.adminService.updateSettings(settings);
   }
 

@@ -1,10 +1,14 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { HttpService } from '@nestjs/axios';
+import { firstValueFrom } from 'rxjs';
 import { Bot, session, InlineKeyboard, Context, SessionFlavor } from 'grammy';
 import {
   BotCallbackAction,
   BotCallbackChain,
   BotCallbackAmount,
+  BotCallbackCryptoAsset,
+  BotCallbackPayoutDestination,
   BotSessionStep,
   AMOUNT_NAIRA_MAP,
   CHAIN_DISPLAY_NAMES
@@ -14,6 +18,7 @@ import { OrdersService } from '../orders/orders.service';
 import { SettingsService } from '../settings/settings.service';
 import { PaymentsService } from '../payments/payments.service';
 import { OracleService } from '../oracle/oracle.service';
+import { OfframpService } from '../offramp/offramp.service';
 import { validateWalletAddress, getValidationErrorMessage, ChainType } from './helpers/wallet-validator';
 import { getExplorerUrl } from '../web3/helpers/explorer.helper';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -24,6 +29,9 @@ interface BotSessionData {
   selectedAmountNaira: number | null;
   userId: string | null; // Store the User UUID for order creation
   lastOrderId: string | null; // Store the last created order ID for payment
+  sellCryptoAsset: 'USDT' | 'TON' | 'SOL' | null;
+  sellCryptoAmount: number | null;
+  sellTxId: string | null;
 }
 
 type BotContext = Context & SessionFlavor<BotSessionData>;
@@ -42,6 +50,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly paymentsService: PaymentsService,
     private readonly oracleService: OracleService,
     private readonly prisma: PrismaService,
+    private readonly httpService: HttpService,
+    private readonly offrampService: OfframpService,
   ) {
     this.botToken = this.configService.get<string>('TELEGRAM_BOT_TOKEN') || '';
     if (!this.botToken) {
@@ -61,6 +71,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         selectedAmountNaira: null,
         userId: null,
         lastOrderId: null,
+        sellCryptoAsset: null,
+        sellCryptoAmount: null,
+        sellTxId: null,
       }),
     }));
 
@@ -71,6 +84,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.command('help', this.handleHelpCommand.bind(this));
     this.bot.command('home', this.handleHomeCommand.bind(this));
     this.bot.command('link', this.handleLinkCommand.bind(this));
+    this.bot.command('ref', this.handleReferralCommand.bind(this));
     this.bot.command('ping', this.handlePingCommand.bind(this));
 
     // Register callback query handlers
@@ -81,6 +95,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.callbackQuery(BotCallbackAction.ACTION_HOME, this.handleHome.bind(this));
     this.bot.callbackQuery(BotCallbackAction.ACTION_PAY_NOW, this.handlePayNow.bind(this));
     this.bot.callbackQuery(BotCallbackAction.ACTION_CANCEL_ORDER, this.handleCancelOrder.bind(this));
+    this.bot.callbackQuery(BotCallbackAction.ACTION_SELL_CRYPTO, this.handleSellCrypto.bind(this));
 
     // Chain selection handlers
     this.bot.callbackQuery(BotCallbackChain.CHAIN_SOLANA, this.handleChainSelection.bind(this));
@@ -92,6 +107,18 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.callbackQuery(BotCallbackAmount.AMT_2500, this.handleAmountSelection.bind(this));
     this.bot.callbackQuery(BotCallbackAmount.AMT_5000, this.handleAmountSelection.bind(this));
     this.bot.callbackQuery(BotCallbackAmount.AMT_CUSTOM, this.handleCustomAmount.bind(this));
+
+    // Crypto asset selection handlers for off-ramp
+    this.bot.callbackQuery(BotCallbackCryptoAsset.CRYPTO_USDT, this.handleCryptoAssetSelection.bind(this));
+    this.bot.callbackQuery(BotCallbackCryptoAsset.CRYPTO_TON, this.handleCryptoAssetSelection.bind(this));
+    this.bot.callbackQuery(BotCallbackCryptoAsset.CRYPTO_SOL, this.handleCryptoAssetSelection.bind(this));
+
+    // Payout destination handlers for off-ramp
+    this.bot.callbackQuery(BotCallbackPayoutDestination.PAYOUT_INTERNAL_WALLET, this.handlePayoutDestination.bind(this));
+    this.bot.callbackQuery(BotCallbackPayoutDestination.PAYOUT_SAVED_BANK, this.handlePayoutDestination.bind(this));
+
+    // Bank selection handler for off-ramp
+    this.bot.callbackQuery(/^BANK_SELECT_/, this.handleBankSelection.bind(this));
 
     // Message handler for wallet address
     this.bot.on('message:text', this.handleTextMessage.bind(this));
@@ -116,11 +143,25 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const username = ctx.from.username;
       const firstName = ctx.from.first_name;
 
-      // Find or create user
+      // Deep Link Handling: e.g., /start REF_CODE or /start order_UUID
+      const payload = ctx.match; // Captures deep-link parameter after ?start=
+      
+      let referralCode: string | undefined;
+      
+      if (payload && typeof payload === 'string') {
+        // Check if it's a referral code (not an order UUID)
+        if (!payload.startsWith('order_')) {
+          referralCode = payload.trim();
+          this.logger.log(`User ${telegramId} started with referral code: ${referralCode}`);
+        }
+      }
+
+      // Find or create user with referral code if provided
       const user = await this.usersService.findOrCreateUser({
         telegramId,
         username,
         firstName,
+        referralCode,
       });
 
       // Reset session and store userId
@@ -130,8 +171,6 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       ctx.session.userId = user.id;
 
       // Deep Link Handling: e.g., /start order_UUID
-      const payload = ctx.match; // Captures deep-link parameter after ?start=
-      
       if (payload && typeof payload === 'string' && payload.startsWith('order_')) {
         const orderId = payload.replace('order_', '').trim();
         const order = await this.ordersService.findOrderById(orderId);
@@ -154,7 +193,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             `• <b>Target Wallet:</b> <code>${order.targetWallet}</code>\n` +
             `• <b>Ref:</b> <code>${order.paymentRef}</code>\n\n` +
             (order.status === 'PAYMENT_VERIFIED' || order.status === 'DISPENSING_QUEUED' 
-              ? '🚀 Your micro-gas is currently being queued for on-chain transfer!' 
+              ? '🚀 Your crypto is currently being queued for on-chain transfer!' 
               : 'Tap below to return to main menu.');
 
           const keyboard = new InlineKeyboard()
@@ -366,7 +405,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const helpText = 
         '❓ <b>Help & Support</b>\n\n' +
         '🤖 <b>How to use this bot:</b>\n' +
-        '1. Click "Buy Micro-Gas" to start a transaction\n' +
+        '1. Click "Buy Crypto" to start a transaction\n' +
         '2. Select your preferred blockchain (Solana, Base, or TON)\n' +
         '3. Choose the amount you want to purchase\n' +
         '4. Provide your wallet address\n' +
@@ -609,6 +648,18 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      // Handle off-ramp amount input
+      if (ctx.session.step === BotSessionStep.AWAITING_SELL_AMOUNT) {
+        await this.handleSellAmountInput(ctx, text);
+        return;
+      }
+
+      // Handle off-ramp transaction ID input
+      if (ctx.session.step === BotSessionStep.AWAITING_SELL_TX_ID) {
+        await this.handleSellTxIdInput(ctx, text);
+        return;
+      }
+
       // Only process wallet address if we're awaiting wallet address
       if (ctx.session.step !== BotSessionStep.AWAITING_WALLET) {
         // User sent a message when not expecting input
@@ -723,6 +774,85 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in generic message handler: ${err.message}`, err.stack);
+    }
+  }
+
+  private async handleSellAmountInput(ctx: BotContext, text: string) {
+    try {
+      // Parse numeric value
+      const amount = parseFloat(text);
+      
+      // Validate numeric input
+      if (isNaN(amount) || amount <= 0) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+        
+        await ctx.reply('❌ Invalid amount. Please enter a valid number (e.g. 10).', { reply_markup: keyboard });
+        return;
+      }
+
+      // Validate minimum amount (10 USDT/TON/SOL)
+      if (amount < 10) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+        
+        await ctx.reply('❌ Minimum amount is 10. Please enter a higher amount.', { reply_markup: keyboard });
+        return;
+      }
+
+      // Store the amount in the dedicated sell field
+      ctx.session.sellCryptoAmount = amount;
+      ctx.session.step = BotSessionStep.SELECT_CHAIN; // Reusing SELECT_CHAIN for crypto asset selection
+
+      const keyboard = new InlineKeyboard()
+        .text('USDT', BotCallbackCryptoAsset.CRYPTO_USDT)
+        .text('TON', BotCallbackCryptoAsset.CRYPTO_TON)
+        .text('SOL', BotCallbackCryptoAsset.CRYPTO_SOL)
+        .row()
+        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      await ctx.reply('Select the crypto asset you sent:', { reply_markup: keyboard });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in sell amount input handler: ${err.message}`, err.stack);
+      await ctx.reply('Sorry, something went wrong. Please try again.');
+    }
+  }
+
+  private async handleSellTxIdInput(ctx: BotContext, text: string) {
+    try {
+      const txId = text.trim();
+      
+      if (!txId || txId.length < 5) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+        
+        await ctx.reply('❌ Invalid Transaction ID. Please enter a valid ID.', { reply_markup: keyboard });
+        return;
+      }
+
+      // Store the transaction ID in the dedicated session field
+      ctx.session.sellTxId = txId;
+      
+      // Show payout destination selection
+      ctx.session.step = BotSessionStep.AWAITING_SELL_PAYOUT_CHOICE;
+
+      const keyboard = new InlineKeyboard()
+        .text('💰 Internal Wallet', BotCallbackPayoutDestination.PAYOUT_INTERNAL_WALLET)
+        .text('🏦 Saved Bank', BotCallbackPayoutDestination.PAYOUT_SAVED_BANK)
+        .row()
+        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      await ctx.reply('Select your payout destination:', { reply_markup: keyboard });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in sell Tx ID input handler: ${err.message}`, err.stack);
+      await ctx.reply('Sorry, something went wrong. Please try again.');
     }
   }
 
@@ -985,6 +1115,58 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async handleReferralCommand(ctx: BotContext) {
+    try {
+      if (!ctx.from) {
+        await ctx.reply('Unable to identify user. Please try again.');
+        return;
+      }
+
+      const telegramId = BigInt(ctx.from.id);
+      const user = await this.usersService.findByTelegramId(telegramId);
+
+      if (!user) {
+        await ctx.reply('User not found. Please start with /start');
+        return;
+      }
+
+      // Get referral stats from backend
+      const response = await this.httpService.axiosRef.get(
+        `${this.configService.get<string>('APP_BASE_URL')}/api/v1/referrals/public/stats/${user.id}`
+      );
+
+      const stats = response.data.data;
+
+      const botUsername = this.configService.get<string>('TELEGRAM_BOT_USERNAME') || 'GasBot';
+      const referralLink = `https://t.me/${botUsername}?start=${user.referralCode}`;
+
+      const message =
+        `🎁 <b>Your Referral Stats</b>\n\n` +
+        `📋 <b>Referral Code:</b> <code>${user.referralCode}</code>\n` +
+        `🔗 <b>Referral Link:</b> ${referralLink}\n\n` +
+        `👥 <b>Total Referred:</b> ${stats.totalReferred}\n` +
+        `💰 <b>Pending Bonuses:</b> ₦${stats.pendingBonuses}\n` +
+        `✅ <b>Total Paid Bonuses:</b> ₦${stats.totalPaidBonuses}\n` +
+        `💵 <b>Unpaid Balance:</b> ₦${stats.unpaidBalance}\n\n` +
+        `📢 <b>How it works:</b>\n` +
+        `Share your referral link with friends. When they make their first deposit, you earn ₦200!`;
+
+      const keyboard = new InlineKeyboard()
+        .url('📤 Share Link', `https://t.me/share/url?url=${encodeURIComponent(referralLink)}&text=Join%20GasBot%20and%20get%20instant%20crypto%20gas!`)
+        .row()
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      await ctx.reply(message, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in /ref command: ${err.message}`, err.stack);
+      await ctx.reply('Sorry, something went wrong fetching your referral stats. Please try again.');
+    }
+  }
+
   private async handleBack(ctx: BotContext) {
     try {
       const currentStep = ctx.session.step;
@@ -1200,9 +1382,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
   private async sendMainMenu(ctx: BotContext, firstName?: string) {
     const keyboard = new InlineKeyboard()
-      .text('⛽ Buy Micro-Gas', BotCallbackAction.ACTION_BUY_GAS)
+      .text('⛽ Buy Crypto', BotCallbackAction.ACTION_BUY_GAS)
       .row()
-      .text('📜 My Orders', BotCallbackAction.ACTION_MY_ORDERS)
+      .text('� Sell Crypto (Bybit UID)', BotCallbackAction.ACTION_SELL_CRYPTO)
+      .row()
+      .text('�📜 My Orders', BotCallbackAction.ACTION_MY_ORDERS)
       .text('❓ Help', BotCallbackAction.ACTION_HELP);
 
     const message = firstName 
@@ -1244,6 +1428,354 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async handleSellCrypto(ctx: BotContext) {
+    try {
+      // Ensure userId is set
+      if (!ctx.session.userId && ctx.from) {
+        const telegramId = BigInt(ctx.from.id);
+        const user = await this.usersService.findOrCreateUser({
+          telegramId,
+          username: ctx.from.username,
+          firstName: ctx.from.first_name,
+        });
+        ctx.session.userId = user.id;
+      }
+
+      ctx.session.step = BotSessionStep.AWAITING_SELL_AMOUNT;
+      ctx.session.selectedChain = null;
+      ctx.session.selectedAmountNaira = null;
+
+      const corporateBybitUid = process.env.CORPORATE_BYBIT_UID || '118368783';
+
+      const message = 
+        `💰 <b>Sell Crypto (Bybit UID)</b>\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `📋 <b>Instructions:</b>\n` +
+        `1. Send crypto to our corporate Bybit UID: <code>${corporateBybitUid}</code>\n` +
+        `2. Take a screenshot of the transaction\n` +
+        `3. Enter the amount you sent\n` +
+        `4. Provide your Bybit Transaction ID\n` +
+        `5. Choose payout destination\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `⚠️ <b>Important:</b>\n` +
+        `• Minimum: 10 USDT/TON/SOL\n` +
+        `• Quote locked for 10 minutes\n` +
+        `• Payout after admin verification\n\n` +
+        `Please enter the amount you sent:`;
+
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+      }
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in ACTION_SELL_CRYPTO handler: ${err.message}`, err.stack);
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
+    }
+  }
+
+  private async handleCryptoAssetSelection(ctx: BotContext) {
+    try {
+      if (!ctx.callbackQuery?.data) {
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid callback data' });
+        }
+        return;
+      }
+
+      const callbackData = ctx.callbackQuery.data;
+      
+      // Map callback to crypto asset
+      const assetMap: Record<string, 'USDT' | 'TON' | 'SOL'> = {
+        [BotCallbackCryptoAsset.CRYPTO_USDT]: 'USDT',
+        [BotCallbackCryptoAsset.CRYPTO_TON]: 'TON',
+        [BotCallbackCryptoAsset.CRYPTO_SOL]: 'SOL',
+      };
+
+      const selectedAsset = assetMap[callbackData];
+      if (!selectedAsset) {
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid crypto asset selection' });
+        }
+        return;
+      }
+
+      // Store the selected asset in the dedicated session field
+      ctx.session.sellCryptoAsset = selectedAsset;
+      ctx.session.step = BotSessionStep.AWAITING_SELL_TX_ID;
+
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      const message = `Please enter your Bybit Transaction ID for ${selectedAsset}:`;
+      
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { reply_markup: keyboard });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { reply_markup: keyboard });
+      }
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in crypto asset selection handler: ${err.message}`, err.stack);
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
+    }
+  }
+
+  private async handleBankSelection(ctx: BotContext) {
+    try {
+      if (!ctx.callbackQuery?.data) {
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid callback data' });
+        }
+        return;
+      }
+
+      const callbackData = ctx.callbackQuery.data;
+      const bankId = callbackData.replace('BANK_SELECT_', '');
+
+      if (!ctx.session.userId) {
+        await ctx.reply('Unable to identify user. Please start over with /start');
+        return;
+      }
+
+      // Verify the bank belongs to the user
+      const savedBank = await this.prisma.savedBank.findUnique({
+        where: { id: bankId },
+      });
+
+      if (!savedBank || savedBank.userId !== ctx.session.userId) {
+        await ctx.reply('Invalid bank selection. Please try again.');
+        return;
+      }
+
+      // Submit the off-ramp request with the selected bank
+      await this.submitOfframpRequest(ctx, 'SAVED_BANK', bankId);
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in bank selection handler: ${err.message}`, err.stack);
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
+    }
+  }
+
+  private async handlePayoutDestination(ctx: BotContext) {
+    try {
+      if (!ctx.callbackQuery?.data) {
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid callback data' });
+        }
+        return;
+      }
+
+      const callbackData = ctx.callbackQuery.data;
+      this.logger.log(`Payout destination callback received: ${callbackData}`);
+      
+      // Map callback to payout destination
+      const destinationMap: Record<string, 'INTERNAL_WALLET' | 'SAVED_BANK'> = {
+        [BotCallbackPayoutDestination.PAYOUT_INTERNAL_WALLET]: 'INTERNAL_WALLET',
+        [BotCallbackPayoutDestination.PAYOUT_SAVED_BANK]: 'SAVED_BANK',
+      };
+
+      const selectedDestination = destinationMap[callbackData];
+      this.logger.log(`Selected destination: ${selectedDestination}`);
+      
+      if (!selectedDestination) {
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid payout destination selection' });
+        }
+        return;
+      }
+
+      if (selectedDestination === 'INTERNAL_WALLET') {
+        this.logger.log('Submitting off-ramp request with INTERNAL_WALLET');
+        // Submit the off-ramp request with internal wallet
+        await this.submitOfframpRequest(ctx, 'INTERNAL_WALLET');
+      } else {
+        this.logger.log('Showing saved banks selection');
+        // Show saved banks for selection
+        await this.showSavedBanks(ctx);
+      }
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in payout destination handler: ${err.message}`, err.stack);
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
+    }
+  }
+
+  private async showSavedBanks(ctx: BotContext) {
+    try {
+      if (!ctx.session.userId) {
+        await ctx.reply('Unable to identify user. Please start over with /start');
+        return;
+      }
+
+      // Get user's saved banks
+      const user = await this.prisma.user.findUnique({
+        where: { id: ctx.session.userId },
+        include: {
+          savedBanks: true,
+        },
+      });
+
+      if (!user || user.savedBanks.length === 0) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+        await ctx.reply(
+          '❌ You have no saved bank accounts. Please add a bank account on the web dashboard first.',
+          { reply_markup: keyboard }
+        );
+        return;
+      }
+
+      ctx.session.step = BotSessionStep.AWAITING_SELL_BANK_CHOICE;
+
+      // Build keyboard with saved banks
+      const keyboard = new InlineKeyboard();
+      user.savedBanks.forEach((bank, index) => {
+        keyboard.text(`${bank.bankName} - ${bank.accountNumber}`, `BANK_SELECT_${bank.id}`);
+        if ((index + 1) % 2 === 0 || index === user.savedBanks.length - 1) {
+          keyboard.row();
+        }
+      });
+      keyboard.text('⬅️ Back', BotCallbackAction.ACTION_BACK);
+      keyboard.text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      const message = 'Select your saved bank account for payout:';
+
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { reply_markup: keyboard });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { reply_markup: keyboard });
+      }
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error showing saved banks: ${err.message}`, err.stack);
+      await ctx.reply('Error processing request. Please try again.');
+    }
+  }
+
+  private async submitOfframpRequest(ctx: BotContext, payoutDestination: 'INTERNAL_WALLET' | 'SAVED_BANK', savedBankId?: string) {
+    try {
+      if (!ctx.session.userId) {
+        await ctx.reply('Unable to identify user. Please start over with /start');
+        return;
+      }
+
+      const cryptoAsset = ctx.session.sellCryptoAsset; // Using the dedicated sell crypto asset field
+      const cryptoAmount = ctx.session.sellCryptoAmount; // Using the dedicated sell crypto amount field
+      const userBybitTxId = ctx.session.sellTxId; // Using the dedicated sell Tx ID field
+
+      this.logger.log(`Session data check - userId: ${ctx.session.userId}, cryptoAsset: ${cryptoAsset}, cryptoAmount: ${cryptoAmount}, txId: ${userBybitTxId}`);
+
+      if (!cryptoAsset || !cryptoAmount || !userBybitTxId) {
+        this.logger.error(`Missing session data - cryptoAsset: ${cryptoAsset}, cryptoAmount: ${cryptoAmount}, txId: ${userBybitTxId}`);
+        await ctx.reply('Missing information. Please start over with /start');
+        return;
+      }
+
+      // Call the offramp service via HTTP
+      const apiBaseUrl = this.configService.get<string>('API_BASE_URL') || 'http://localhost:5000';
+      const response = await firstValueFrom(
+        this.httpService.post(
+          `${apiBaseUrl}/api/v1/offramp/bot-submit`,
+          {
+            userId: ctx.session.userId,
+            cryptoAsset,
+            cryptoAmount,
+            userBybitTxId,
+            payoutDestination,
+            savedBankId,
+          }
+        )
+      );
+
+      const offrampRequest = response.data;
+
+      // Reset session
+      ctx.session.step = BotSessionStep.IDLE;
+      ctx.session.sellCryptoAsset = null;
+      ctx.session.sellCryptoAmount = null;
+      ctx.session.sellTxId = null;
+
+      const message = 
+        `✅ <b>Off-Ramp Request Submitted</b>\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `💰 <b>Amount:</b> ${cryptoAmount} ${cryptoAsset}\n` +
+        `💵 <b>NGN Value:</b> ₦${offrampRequest.ngnValue.toLocaleString()}\n` +
+        `📈 <b>Rate:</b> ₦${offrampRequest.exchangeRate.toLocaleString()}\n` +
+        `🏦 <b>Payout:</b> ${payoutDestination}\n` +
+        `📝 <b>Status:</b> Pending Verification\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `⏳ Your request will be reviewed by our admin team.\n` +
+        `💵 You'll receive NGN payout after verification.\n\n` +
+        `📜 Request ID: <code>${offrampRequest.id.substring(0, 8)}...</code>`;
+
+      const keyboard = new InlineKeyboard()
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      await ctx.reply(message, { 
+        parse_mode: 'HTML',
+        reply_markup: keyboard 
+      });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error submitting off-ramp request: ${err.message}`, err.stack);
+      await ctx.reply('Error processing request. Please try again.');
+    }
+  }
+
   async onModuleInit() {
     try {
       const isDevelopment = this.configService.get<string>('NODE_ENV') !== 'production';
@@ -1258,7 +1790,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       try {
         await this.bot.api.setMyCommands([
           { command: 'start', description: 'Main Menu & Home' },
-          { command: 'buygas', description: '⛽ Buy Micro-Gas' },
+          { command: 'buygas', description: '⛽ Buy Crypto' },
           { command: 'orders', description: '📜 View My Orders' },
           { command: 'help', description: '❓ Support & Guide' },
           { command: 'home', description: '🏠 Return to Main Menu' },

@@ -1,7 +1,7 @@
 import { Controller, Post, Body, Get, Param } from '@nestjs/common';
 import { WalletService, PaystackBank } from './wallet.service';
 
-@Controller('api/v1/wallet/public')
+@Controller('wallet/public')
 export class WalletPublicController {
   constructor(private readonly walletService: WalletService) {}
 

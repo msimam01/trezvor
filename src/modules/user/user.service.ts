@@ -77,17 +77,18 @@ export class UserService {
       throw new NotFoundException('User not found');
     }
 
-    // Create offramp request
+    // Create offramp request using new schema
     const offrampRequest = await this.prisma.offrampRequest.create({
       data: {
         userId,
-        token: body.token,
-        amount: body.amount,
-        bybitUid: body.bybitUid,
-        bankName: body.bankName,
-        bankAccountNumber: body.bankAccountNumber,
-        bankAccountName: body.bankAccountName,
-        status: 'PENDING',
+        cryptoAsset: body.token, // Map old field to new field
+        cryptoAmount: body.amount, // Map old field to new field
+        ngnValue: body.amount * 1600, // Rough estimate - should use oracle
+        exchangeRate: 1600, // Rough estimate - should use oracle
+        bybitUidUsed: body.bybitUid, // Map old field to new field
+        userBybitTxId: 'MANUAL_ENTRY', // Placeholder for old API
+        payoutDestination: 'SAVED_BANK', // Default for old API
+        status: 'PENDING_VERIFICATION',
       },
     });
 

@@ -5,6 +5,7 @@ interface CreateUserDto {
   telegramId: bigint;
   username?: string;
   firstName?: string;
+  referralCode?: string;
 }
 
 @Injectable()
@@ -15,7 +16,7 @@ export class UsersService {
 
   async findOrCreateUser(createUserDto: CreateUserDto) {
     try {
-      const { telegramId, username, firstName } = createUserDto;
+      const { telegramId, username, firstName, referralCode: incomingReferralCode } = createUserDto;
 
       // Try to find existing user
       let user = await this.prisma.user.findUnique({
@@ -38,14 +39,31 @@ export class UsersService {
         }
       } else {
         // Create new user
-        const referralCode = `${username?.substring(0, 3).toUpperCase() || 'TG'}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+        const userReferralCode = `${username?.substring(0, 3).toUpperCase() || 'TG'}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+        
+        let referredById: string | undefined;
+        
+        // Handle referral code if provided
+        if (incomingReferralCode) {
+          const referrer = await this.prisma.user.findUnique({
+            where: { referralCode: incomingReferralCode },
+          });
+          
+          if (referrer) {
+            referredById = referrer.id;
+            this.logger.log(`User ${telegramId} referred by ${referrer.id} with code ${incomingReferralCode}`);
+          } else {
+            this.logger.warn(`Invalid referral code: ${incomingReferralCode}`);
+          }
+        }
         
         user = await this.prisma.user.create({
           data: {
             telegramId,
             username,
             firstName,
-            referralCode,
+            referralCode: userReferralCode,
+            referredById,
             role: 'USER',
             status: 'active',
             nairaBalance: 0.0,
@@ -53,6 +71,19 @@ export class UsersService {
           },
         });
         this.logger.log(`Created new user with telegramId: ${telegramId}`);
+
+        // Create referral record if user was referred
+        if (referredById) {
+          await this.prisma.referralRecord.create({
+            data: {
+              referrerId: referredById,
+              refereeId: user.id,
+              bonusAmount: 200.0, // Default bonus amount
+              status: 'PENDING',
+            },
+          });
+          this.logger.log(`Created referral record: ${referredById} -> ${user.id}`);
+        }
       }
 
       return user;

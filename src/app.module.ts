@@ -18,6 +18,8 @@ import { AuthModule } from './modules/auth/auth.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { UserModule } from './modules/user/user.module';
 import { WalletModule } from './modules/wallet/wallet.module';
+import { ReferralModule } from './modules/referrals/referral.module';
+import { OfframpModule } from './modules/offramp/offramp.module';
 
 @Module({
   imports: [
@@ -44,6 +46,8 @@ import { WalletModule } from './modules/wallet/wallet.module';
     OrdersModule,
     UserModule,
     WalletModule,
+    ReferralModule,
+    OfframpModule,
   ],
   controllers: [AppController],
   providers: [

@@ -110,7 +110,7 @@ export default function AdminPage() {
                   </div>
                   <p className="text-sm text-[#8B98A5] mb-1">{vault.symbol} balance</p>
                   <p className="font-data text-2xl font-semibold text-white mb-4">
-                    {vault.balance.toFixed(6)} {vault.symbol}
+                    {Number(vault.balance).toFixed(6)} {vault.symbol}
                   </p>
                   <div className="flex items-center justify-between border-t border-dashed border-[#232C36] pt-4 mb-4">
                     <p className="font-data text-xs text-[#8B98A5]">
@@ -208,7 +208,7 @@ export default function AdminPage() {
                           ₦{order.fiatAmountNaira.toLocaleString()}
                         </TableCell>
                         <TableCell className="font-data font-semibold text-white">
-                          {order.cryptoAmount.toFixed(6)}
+                          {Number(order.cryptoAmount).toFixed(6)}
                         </TableCell>
                         <TableCell>
                           <span className="flex items-center gap-2 text-sm text-[#EDEFEA]">

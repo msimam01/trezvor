@@ -24,6 +24,8 @@ export interface VaultBalance {
 export interface AdminSettings {
   platformFeePercentage: number;
   maxFeeCap: number;
+  referralCommissionRate: number;
+  isVirtualAccountEnabled: boolean;
   liquidityThresholds: {
     SOLANA: { minBalance: number; alertThreshold: number };
     BASE: { minBalance: number; alertThreshold: number };
@@ -201,11 +203,16 @@ export class AdminService {
   }
 
   async getSettings(): Promise<AdminSettings> {
-    // In production, this would be stored in a settings table
-    // For now, return default settings
+    // Get settings from SystemConfig table
+    const systemConfig = await this.prisma.systemConfig.findUnique({
+      where: { id: 'global' },
+    });
+
     return {
-      platformFeePercentage: 5,
+      platformFeePercentage: Number(systemConfig?.platformFeePercent || 15.0),
       maxFeeCap: 200,
+      referralCommissionRate: Number(systemConfig?.referralCommissionRate || 20.0),
+      isVirtualAccountEnabled: systemConfig?.isVirtualAccountEnabled || false,
       liquidityThresholds: {
         SOLANA: { minBalance: 1.0, alertThreshold: 0.5 },
         BASE: { minBalance: 0.01, alertThreshold: 0.005 },
@@ -214,15 +221,37 @@ export class AdminService {
     };
   }
 
-  async updateSettings(settings: Partial<AdminSettings>): Promise<AdminSettings> {
-    // In production, this would update a settings table
-    // For now, just return the updated settings
-    const currentSettings = await this.getSettings();
-    
-    return {
-      ...currentSettings,
-      ...settings,
-    };
+  async updateSettings(settings: any): Promise<AdminSettings> {
+    console.log('Received settings update:', settings);
+
+    // Update SystemConfig table
+    const updateData: any = {};
+
+    // Handle both flat and nested structures
+    const feeSettings = settings.feeSettings || settings;
+
+    if (feeSettings.platformFeePercentage !== undefined) {
+      updateData.platformFeePercent = feeSettings.platformFeePercentage;
+    }
+
+    if (feeSettings.referralCommissionRate !== undefined) {
+      updateData.referralCommissionRate = feeSettings.referralCommissionRate;
+    }
+
+    if (feeSettings.isVirtualAccountEnabled !== undefined) {
+      updateData.isVirtualAccountEnabled = feeSettings.isVirtualAccountEnabled;
+    }
+
+    console.log('Updating SystemConfig with:', updateData);
+
+    if (Object.keys(updateData).length > 0) {
+      await this.prisma.systemConfig.update({
+        where: { id: 'global' },
+        data: updateData,
+      });
+    }
+
+    return this.getSettings();
   }
 
   async retryOrder(orderId: string) {
@@ -330,7 +359,7 @@ export class AdminService {
       throw new NotFoundException('Offramp request not found');
     }
 
-    if (request.status !== 'PENDING') {
+    if (request.status !== 'PENDING_VERIFICATION') {
       throw new BadRequestException('Only pending requests can be approved');
     }
 
@@ -348,7 +377,7 @@ export class AdminService {
     await this.mailService.sendEmail(
       request.user.email || 'user@example.com',
       'Off-ramp Request Approved',
-      `Your off-ramp request for ${request.amount} ${request.token} has been approved. The NGN payout will be sent to your bank account within 24-48 hours.`
+      `Your off-ramp request for ${request.cryptoAmount} ${request.cryptoAsset} has been approved. The NGN payout will be sent to your bank account within 24-48 hours.`
     );
 
     return updatedRequest;
@@ -364,7 +393,7 @@ export class AdminService {
       throw new NotFoundException('Offramp request not found');
     }
 
-    if (request.status !== 'PENDING') {
+    if (request.status !== 'PENDING_VERIFICATION') {
       throw new BadRequestException('Only pending requests can be rejected');
     }
 
@@ -372,6 +401,7 @@ export class AdminService {
       where: { id: requestId },
       data: { 
         status: 'REJECTED',
+        rejectionReason: reason,
         updatedAt: new Date(),
       },
     });
@@ -380,7 +410,7 @@ export class AdminService {
     await this.mailService.sendEmail(
       request.user.email || 'user@example.com',
       'Off-ramp Request Rejected',
-      `Your off-ramp request for ${request.amount} ${request.token} has been rejected.${reason ? ` Reason: ${reason}` : ''} Please contact support if you believe this is an error.`
+      `Your off-ramp request for ${request.cryptoAmount} ${request.cryptoAsset} has been rejected.${reason ? ` Reason: ${reason}` : ''} Please contact support if you believe this is an error.`
     );
 
     return updatedRequest;

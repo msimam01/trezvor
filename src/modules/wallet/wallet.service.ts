@@ -399,7 +399,7 @@ export class WalletService {
     }
   }
 
-  async addFunds(userId: string, amount: number, type: 'REFERRAL_EARNING' | 'BONUS_DEPOSIT' | 'REFUND', reference: string, metadata?: any): Promise<void> {
+  async addFunds(userId: string, amount: number, type: 'REFERRAL_EARNING' | 'BONUS_DEPOSIT' | 'REFUND' | 'OFFRAMP_PAYOUT', reference: string, metadata?: any): Promise<void> {
     try {
       // Add to user balance
       await this.prisma.user.update({

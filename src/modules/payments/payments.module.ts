@@ -6,9 +6,10 @@ import { PaymentsController } from './payments.controller';
 import { OrdersModule } from '../orders/orders.module';
 import { UsersModule } from '../users/users.module';
 import { QueueModule } from '../queue/queue.module';
+import { ReferralModule } from '../referrals/referral.module';
 
 @Module({
-  imports: [HttpModule, OrdersModule, UsersModule, QueueModule],
+  imports: [HttpModule, OrdersModule, UsersModule, QueueModule, ReferralModule],
   controllers: [PaymentsController],
   providers: [PaymentsService],
   exports: [PaymentsService],

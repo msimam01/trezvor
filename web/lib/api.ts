@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000/api/v1';
 
 // Create axios instance with base configuration
 const apiClient = axios.create({
@@ -52,7 +52,7 @@ apiClient.interceptors.response.use(
 export interface VaultBalance {
   chain: 'SOLANA' | 'BASE' | 'TON';
   symbol: string;
-  balance: number;
+  balance: number | string;
   address: string;
   status: 'healthy' | 'warning' | 'critical';
 }
@@ -120,6 +120,8 @@ export interface Notification {
 export interface FeeSettings {
   platformFeePercentage: number;
   maxFeeCap: number;
+  referralCommissionRate: number;
+  isVirtualAccountEnabled: boolean;
 }
 
 export interface LiquidityThreshold {
@@ -226,7 +228,7 @@ export const api = {
   },
 
   updateSettings: async (settings: PlatformSettings): Promise<{ success: boolean; message: string }> => {
-    const response = await apiClient.post('/admin/settings', settings);
+    const response = await apiClient.patch('/admin/settings', settings);
     return response.data;
   },
 
@@ -292,6 +294,18 @@ export const api = {
     return response.data;
   },
 
+  getReferralStats: async (): Promise<{
+    referralCode: string;
+    referralLink: string;
+    totalReferred: number;
+    pendingBonuses: number;
+    totalPaidBonuses: number;
+    unpaidBalance: number;
+  }> => {
+    const response = await apiClient.get('/referrals/stats');
+    return response.data.data;
+  },
+
   requestPayout: async (bankDetails: {
     bankName: string;
     bankAccountNumber: string;
@@ -319,23 +333,19 @@ export const api = {
   },
 
   // Admin Offramp Endpoints
-  getAdminOfframpRequests: async (params?: { page?: number; pageSize?: number; status?: string }): Promise<{
+  getAdminOfframpRequests: async (params?: { status?: string }): Promise<{
     requests: any[];
-    total: number;
-    page: number;
-    pageSize: number;
-    totalPages: number;
   }> => {
-    const response = await apiClient.get('/admin/offramp', { params });
+    const response = await apiClient.get('/admin/offramp/pending', { params });
     return response.data;
   },
 
-  approveOfframp: async (requestId: string): Promise<{ success: boolean; message: string }> => {
+  approveOfframp: async (requestId: string): Promise<any> => {
     const response = await apiClient.patch(`/admin/offramp/${requestId}/approve`);
     return response.data;
   },
 
-  rejectOfframp: async (requestId: string, reason?: string): Promise<{ success: boolean; message: string }> => {
+  rejectOfframp: async (requestId: string, reason?: string): Promise<any> => {
     const response = await apiClient.patch(`/admin/offramp/${requestId}/reject`, { reason });
     return response.data;
   },

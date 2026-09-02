@@ -6,6 +6,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { OrdersService } from '../orders/orders.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ReferralService } from '../referrals/referral.service';
 
 interface PaystackInitializeResponse {
   status: boolean;
@@ -46,6 +47,7 @@ export class PaymentsService {
     private readonly ordersService: OrdersService,
     private readonly prisma: PrismaService,
     @InjectQueue('gas-dispense-queue') private readonly gasQueue: Queue,
+    private readonly referralService: ReferralService,
   ) {
     this.paystackSecretKey = this.configService.get<string>('PAYSTACK_SECRET_KEY') || '';
     if (!this.paystackSecretKey) {
@@ -197,6 +199,42 @@ export class PaymentsService {
         await this.ordersService.updateOrderStatus(order.id, 'PAYMENT_VERIFIED');
 
         this.logger.log(`Order ${order.id} payment verified and status updated to PAYMENT_VERIFIED`);
+
+        // Calculate platform fee using the feeNaira field directly
+        const platformFeeNgn = Number(order.feeNaira);
+
+        this.logger.log(`Order ${order.id} platform fee: ₦${platformFeeNgn} (feeNaira)`);
+
+        // Process referral commission for transaction
+        try {
+          const commissionResult = await this.referralService.processTransactionCommission(
+            order.id,
+            platformFeeNgn,
+          );
+
+          if (commissionResult.success) {
+            this.logger.log(`Referral commission processed successfully for order ${order.id}`);
+          }
+        } catch (commissionError) {
+          this.logger.error(`Error processing referral commission for order ${order.id}:`, commissionError);
+          // Don't fail the payment process if commission processing fails
+        }
+
+        // Process referral bonus for first deposit (if virtual accounts are enabled)
+        try {
+          const depositAmount = Number(order.totalAmount);
+          const bonusResult = await this.referralService.processFirstDepositBonus(
+            order.userId,
+            depositAmount,
+          );
+
+          if (bonusResult.success) {
+            this.logger.log(`Referral bonus processed successfully for order ${order.id}`);
+          }
+        } catch (bonusError) {
+          this.logger.error(`Error processing referral bonus for order ${order.id}:`, bonusError);
+          // Don't fail the payment process if bonus processing fails
+        }
 
         // Dispatch job to queue for gas dispensing
         await this.gasQueue.add(

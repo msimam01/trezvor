@@ -38,10 +38,14 @@ enum UserRole {
 }
 
 enum OfframpStatus {
-  PENDING
+  PENDING_VERIFICATION
   APPROVED
   REJECTED
-  PROCESSING
+}
+
+enum PayoutDestination {
+  INTERNAL_WALLET
+  SAVED_BANK
 }
 
 enum RefundStatus {
@@ -65,6 +69,11 @@ enum WalletTransactionStatus {
   FAILED
 }
 
+enum ReferralStatus {
+  PENDING
+  REWARDED
+}
+
 model User {
   id                         String         @id @default(uuid())
   email                      String?        @unique
@@ -78,6 +87,7 @@ model User {
   referredById               String?
   referrer                   User?          @relation("Referrals", fields: [referredById], references: [id], onDelete: SetNull)
   referrals                  User[]         @relation("Referrals")
+  hasCompletedFirstDeposit  Boolean        @default(false)
   nairaBalance               Float          @default(0.0)
   unpaidAffiliateBalance     Float          @default(0.0)
   lastActive                 DateTime?
@@ -88,6 +98,8 @@ model User {
   refundRequests             RefundRequest[]
   savedBanks                 SavedBank[]
   walletTransactions         WalletTransaction[]
+  referralRecordsGiven       ReferralRecord[] @relation("ReferralRecordsGiven")
+  referralRecordReceived     ReferralRecord? @relation("ReferralRecordReceived")
 
   @@index([telegramId])
   @@index([email])
@@ -130,9 +142,11 @@ model WebhookLog {
 }
 
 model SystemConfig {
-  id                 String   @id @default("global")
-  platformFeePercent Decimal  @default(15.00) @db.Decimal(5, 2)
-  updatedAt          DateTime @updatedAt
+  id                      String   @id @default("global")
+  platformFeePercent      Decimal  @default(15.00) @db.Decimal(5, 2)
+  referralCommissionRate  Decimal  @default(20.00) @db.Decimal(5, 2)
+  isVirtualAccountEnabled Boolean  @default(false)
+  updatedAt               DateTime @updatedAt
 }
 
 model ChainConfig {
@@ -145,23 +159,28 @@ model ChainConfig {
 }
 
 model OfframpRequest {
-  id                String        @id @default(uuid())
-  userId            String
-  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  token             String
-  amount            Float
-  bybitUid          String
-  bankName          String
-  bankAccountNumber String
-  bankAccountName   String
-  status            OfframpStatus @default(PENDING)
-  proofHash         String?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  id                   String            @id @default(uuid())
+  userId               String
+  user                 User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cryptoAsset          String
+  cryptoAmount         Float
+  ngnValue             Float
+  exchangeRate         Float
+  bybitUidUsed         String
+  userBybitTxId        String
+  proofImageUrl        String?
+  payoutDestination    PayoutDestination
+  savedBankId          String?
+  savedBank            SavedBank?        @relation(fields: [savedBankId], references: [id], onDelete: SetNull)
+  status               OfframpStatus     @default(PENDING_VERIFICATION)
+  rejectionReason      String?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
 
   @@index([userId])
   @@index([status])
   @@index([createdAt])
+  @@index([savedBankId])
 }
 
 model RefundRequest {
@@ -183,17 +202,18 @@ model RefundRequest {
 }
 
 model SavedBank {
-  id                    String   @id @default(uuid())
+  id                    String           @id @default(uuid())
   userId                String
-  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   bankCode              String
   bankName              String
   accountNumber         String
   accountName           String
-  paystackRecipientCode String?  @unique
-  isVerified            Boolean  @default(false)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  paystackRecipientCode String?          @unique
+  isVerified            Boolean          @default(false)
+  offrampRequests       OfframpRequest[]
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
 
   @@index([userId])
   @@index([accountNumber])
@@ -229,4 +249,20 @@ model AccountLinkCode {
   @@index([code])
   @@index([telegramId])
   @@index([expiresAt])
+}
+
+model ReferralRecord {
+  id          String         @id @default(uuid())
+  referrerId  String
+  referrer    User           @relation("ReferralRecordsGiven", fields: [referrerId], references: [id], onDelete: Cascade)
+  refereeId   String         @unique
+  referee     User           @relation("ReferralRecordReceived", fields: [refereeId], references: [id], onDelete: Cascade)
+  bonusAmount Float          @default(200.0)
+  status      ReferralStatus @default(PENDING)
+  rewardedAt  DateTime?
+  createdAt   DateTime       @default(now())
+
+  @@index([referrerId])
+  @@index([refereeId])
+  @@index([status])
 }
