@@ -26,6 +26,7 @@ export interface AdminSettings {
   maxFeeCap: number;
   referralCommissionRate: number;
   isVirtualAccountEnabled: boolean;
+  usdtBuyRateNgn: number;
   liquidityThresholds: {
     SOLANA: { minBalance: number; alertThreshold: number };
     BASE: { minBalance: number; alertThreshold: number };
@@ -213,6 +214,7 @@ export class AdminService {
       maxFeeCap: 200,
       referralCommissionRate: Number(systemConfig?.referralCommissionRate || 20.0),
       isVirtualAccountEnabled: systemConfig?.isVirtualAccountEnabled || false,
+      usdtBuyRateNgn: Number(systemConfig?.usdtBuyRateNgn || 1550.0),
       liquidityThresholds: {
         SOLANA: { minBalance: 1.0, alertThreshold: 0.5 },
         BASE: { minBalance: 0.01, alertThreshold: 0.005 },
@@ -240,6 +242,10 @@ export class AdminService {
 
     if (feeSettings.isVirtualAccountEnabled !== undefined) {
       updateData.isVirtualAccountEnabled = feeSettings.isVirtualAccountEnabled;
+    }
+
+    if (feeSettings.usdtBuyRateNgn !== undefined) {
+      updateData.usdtBuyRateNgn = feeSettings.usdtBuyRateNgn;
     }
 
     console.log('Updating SystemConfig with:', updateData);
@@ -476,13 +482,21 @@ export class AdminService {
     // For now, mark as paid
     const payoutAmount = user.unpaidAffiliateBalance;
 
+    // Get current balance for strict numeric arithmetic
+    const currentUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { nairaBalance: true }
+    });
+
+    const currentBalance = Number(currentUser?.nairaBalance || 0);
+    const numericPayoutAmount = Number(payoutAmount);
+    const newBalance = currentBalance + numericPayoutAmount;
+
     const updatedUser = await this.prisma.user.update({
       where: { id: userId },
       data: {
         unpaidAffiliateBalance: 0,
-        nairaBalance: {
-          increment: payoutAmount,
-        },
+        nairaBalance: newBalance,
       },
     });
 

@@ -146,6 +146,7 @@ model SystemConfig {
   platformFeePercent      Decimal  @default(15.00) @db.Decimal(5, 2)
   referralCommissionRate  Decimal  @default(20.00) @db.Decimal(5, 2)
   isVirtualAccountEnabled Boolean  @default(false)
+  usdtBuyRateNgn          Decimal  @default(1550.00) @db.Decimal(10, 2)
   updatedAt               DateTime @updatedAt
 }
 

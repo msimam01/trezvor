@@ -24,6 +24,7 @@ export class SettingsService implements OnModuleInit {
           data: {
             id: 'global',
             platformFeePercent: 15.00,
+            usdtBuyRateNgn: 1550.00,
           },
         });
         this.logger.log('Seeded default SystemConfig');
@@ -149,6 +150,45 @@ export class SettingsService implements OnModuleInit {
       const err = error as Error;
       this.logger.error(`Error updating chain config for ${chain}: ${err.message}`, err.stack);
       throw err;
+    }
+  }
+
+  async getAdminSettings(): Promise<{
+    platformFeePercent: number;
+    referralCommissionRate: number;
+    isVirtualAccountEnabled: boolean;
+    usdtBuyRateNgn: number;
+  }> {
+    try {
+      const config = await this.prisma.systemConfig.findUnique({
+        where: { id: 'global' },
+      });
+
+      if (!config) {
+        this.logger.warn('SystemConfig not found, using defaults');
+        return {
+          platformFeePercent: 15.0,
+          referralCommissionRate: 20.0,
+          isVirtualAccountEnabled: false,
+          usdtBuyRateNgn: 1550.0,
+        };
+      }
+
+      return {
+        platformFeePercent: Number(config.platformFeePercent),
+        referralCommissionRate: Number(config.referralCommissionRate),
+        isVirtualAccountEnabled: config.isVirtualAccountEnabled,
+        usdtBuyRateNgn: Number(config.usdtBuyRateNgn || 1550.0),
+      };
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error getting admin settings: ${err.message}`, err.stack);
+      return {
+        platformFeePercent: 15.0,
+        referralCommissionRate: 20.0,
+        isVirtualAccountEnabled: false,
+        usdtBuyRateNgn: 1550.0,
+      };
     }
   }
 }

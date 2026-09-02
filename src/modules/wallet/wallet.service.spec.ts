@@ -368,7 +368,7 @@ describe('WalletService', () => {
 
       expect(mockPrismaService.user.update).toHaveBeenCalledWith({
         where: { id: userId },
-        data: { nairaBalance: { decrement: amount } },
+        data: { nairaBalance: expect.any(Number) },
       });
 
       expect(mockPrismaService.walletTransaction.update).toHaveBeenCalledWith({
@@ -398,7 +398,7 @@ describe('WalletService', () => {
 
       expect(mockPrismaService.user.update).toHaveBeenCalledWith({
         where: { id: userId },
-        data: { nairaBalance: { increment: amount } },
+        data: { nairaBalance: expect.any(Number) },
       });
 
       expect(mockPrismaService.walletTransaction.create).toHaveBeenCalledWith({

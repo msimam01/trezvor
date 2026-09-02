@@ -22,6 +22,7 @@ import { OfframpService } from '../offramp/offramp.service';
 import { validateWalletAddress, getValidationErrorMessage, ChainType } from './helpers/wallet-validator';
 import { getExplorerUrl } from '../web3/helpers/explorer.helper';
 import { PrismaService } from '../../prisma/prisma.service';
+import { WalletService } from '../wallet/wallet.service';
 
 interface BotSessionData {
   step: BotSessionStep;
@@ -32,6 +33,10 @@ interface BotSessionData {
   sellCryptoAsset: 'USDT' | 'TON' | 'SOL' | null;
   sellCryptoAmount: number | null;
   sellTxId: string | null;
+  selectedBankCode: string | null; // For bank selection
+  withdrawalAmount: number | null; // For withdrawal flow
+  withdrawalBankId: string | null; // For withdrawal flow
+  addBankFlow: boolean; // Track if user is in add bank flow
 }
 
 type BotContext = Context & SessionFlavor<BotSessionData>;
@@ -52,6 +57,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly httpService: HttpService,
     private readonly offrampService: OfframpService,
+    private readonly walletService: WalletService,
   ) {
     this.botToken = this.configService.get<string>('TELEGRAM_BOT_TOKEN') || '';
     if (!this.botToken) {
@@ -74,6 +80,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         sellCryptoAsset: null,
         sellCryptoAmount: null,
         sellTxId: null,
+        selectedBankCode: null,
+        withdrawalAmount: null,
+        withdrawalBankId: null,
+        addBankFlow: false,
       }),
     }));
 
@@ -86,6 +96,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.command('link', this.handleLinkCommand.bind(this));
     this.bot.command('ref', this.handleReferralCommand.bind(this));
     this.bot.command('ping', this.handlePingCommand.bind(this));
+    this.bot.command('bank', this.handleBankCommand.bind(this));
+    this.bot.command('wallet', this.handleWalletCommand.bind(this));
 
     // Register callback query handlers
     this.bot.callbackQuery(BotCallbackAction.ACTION_BUY_GAS, this.handleBuyGas.bind(this));
@@ -96,6 +108,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.callbackQuery(BotCallbackAction.ACTION_PAY_NOW, this.handlePayNow.bind(this));
     this.bot.callbackQuery(BotCallbackAction.ACTION_CANCEL_ORDER, this.handleCancelOrder.bind(this));
     this.bot.callbackQuery(BotCallbackAction.ACTION_SELL_CRYPTO, this.handleSellCrypto.bind(this));
+    this.bot.callbackQuery(BotCallbackAction.ACTION_BANK, this.handleBank.bind(this));
+    this.bot.callbackQuery(BotCallbackAction.ACTION_WALLET, this.handleWallet.bind(this));
+    this.bot.callbackQuery(BotCallbackAction.ACTION_WITHDRAW, this.handleWithdraw.bind(this));
 
     // Chain selection handlers
     this.bot.callbackQuery(BotCallbackChain.CHAIN_SOLANA, this.handleChainSelection.bind(this));
@@ -108,10 +123,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.callbackQuery(BotCallbackAmount.AMT_5000, this.handleAmountSelection.bind(this));
     this.bot.callbackQuery(BotCallbackAmount.AMT_CUSTOM, this.handleCustomAmount.bind(this));
 
-    // Crypto asset selection handlers for off-ramp
-    this.bot.callbackQuery(BotCallbackCryptoAsset.CRYPTO_USDT, this.handleCryptoAssetSelection.bind(this));
-    this.bot.callbackQuery(BotCallbackCryptoAsset.CRYPTO_TON, this.handleCryptoAssetSelection.bind(this));
-    this.bot.callbackQuery(BotCallbackCryptoAsset.CRYPTO_SOL, this.handleCryptoAssetSelection.bind(this));
+    // Crypto asset selection handlers for off-ramp (USDT only now)
+    // this.bot.callbackQuery(BotCallbackCryptoAsset.CRYPTO_USDT, this.handleCryptoAssetSelection.bind(this));
+    // this.bot.callbackQuery(BotCallbackCryptoAsset.CRYPTO_TON, this.handleCryptoAssetSelection.bind(this));
+    // this.bot.callbackQuery(BotCallbackCryptoAsset.CRYPTO_SOL, this.handleCryptoAssetSelection.bind(this));
 
     // Payout destination handlers for off-ramp
     this.bot.callbackQuery(BotCallbackPayoutDestination.PAYOUT_INTERNAL_WALLET, this.handlePayoutDestination.bind(this));
@@ -119,6 +134,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     // Bank selection handler for off-ramp
     this.bot.callbackQuery(/^BANK_SELECT_/, this.handleBankSelection.bind(this));
+    
+    // Bank selection handler for adding bank accounts
+    this.bot.callbackQuery(/^BANK_CODE_/, this.handleBankCodeSelection.bind(this));
 
     // Message handler for wallet address
     this.bot.on('message:text', this.handleTextMessage.bind(this));
@@ -660,6 +678,18 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      // Handle bank account number input
+      if (ctx.session.step === BotSessionStep.AWAITING_ACCOUNT_NUMBER) {
+        await this.handleAccountNumberInput(ctx, text);
+        return;
+      }
+
+      // Handle withdrawal amount input
+      if (ctx.session.step === BotSessionStep.AWAITING_WITHDRAWAL_AMOUNT) {
+        await this.handleWithdrawalAmountInput(ctx, text);
+        return;
+      }
+
       // Only process wallet address if we're awaiting wallet address
       if (ctx.session.step !== BotSessionStep.AWAITING_WALLET) {
         // User sent a message when not expecting input
@@ -792,29 +822,45 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      // Validate minimum amount (10 USDT/TON/SOL)
+      // Validate minimum amount (10 USDT)
       if (amount < 10) {
         const keyboard = new InlineKeyboard()
           .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
           .text('🏠 Home', BotCallbackAction.ACTION_HOME);
         
-        await ctx.reply('❌ Minimum amount is 10. Please enter a higher amount.', { reply_markup: keyboard });
+        await ctx.reply('❌ Minimum amount is 10 USDT. Please enter a higher amount.', { reply_markup: keyboard });
         return;
       }
 
       // Store the amount in the dedicated sell field
       ctx.session.sellCryptoAmount = amount;
-      ctx.session.step = BotSessionStep.SELECT_CHAIN; // Reusing SELECT_CHAIN for crypto asset selection
+      ctx.session.sellCryptoAsset = 'USDT'; // Only USDT is supported now
+      
+      // Calculate NGN value using admin settings
+      const settings = await this.settingsService.getAdminSettings();
+      const usdtBuyRate = settings.usdtBuyRateNgn || 1550.0;
+      const ngnValue = amount * usdtBuyRate;
+
+      // Show calculated value and proceed to transaction ID input
+      ctx.session.step = BotSessionStep.AWAITING_SELL_TX_ID;
 
       const keyboard = new InlineKeyboard()
-        .text('USDT', BotCallbackCryptoAsset.CRYPTO_USDT)
-        .text('TON', BotCallbackCryptoAsset.CRYPTO_TON)
-        .text('SOL', BotCallbackCryptoAsset.CRYPTO_SOL)
-        .row()
         .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
         .text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
-      await ctx.reply('Select the crypto asset you sent:', { reply_markup: keyboard });
+      const message = 
+        `💰 <b>USDT Off-Ramp</b>\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `💵 <b>Amount:</b> ${amount} USDT\n` +
+        `💰 <b>NGN Value:</b> ₦${ngnValue.toLocaleString()}\n` +
+        `📈 <b>Rate:</b> ₦${usdtBuyRate.toLocaleString()}/USDT\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `Please enter your Bybit Transaction ID:`;
+
+      await ctx.reply(message, { 
+        parse_mode: 'HTML',
+        reply_markup: keyboard 
+      });
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in sell amount input handler: ${err.message}`, err.stack);
@@ -905,6 +951,129 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in custom amount input handler: ${err.message}`, err.stack);
+      await ctx.reply('Sorry, something went wrong. Please try again.');
+    }
+  }
+
+  private async handleAccountNumberInput(ctx: BotContext, text: string) {
+    try {
+      const accountNumber = text.trim();
+      
+      // Validate account number (10 digits)
+      if (!/^\d{10}$/.test(accountNumber)) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+        
+        await ctx.reply('❌ Invalid account number. Please enter a valid 10-digit NUBAN account number.', { reply_markup: keyboard });
+        return;
+      }
+
+      if (!ctx.session.userId || !ctx.session.selectedBankCode) {
+        await ctx.reply('Session expired. Please start over with /bank');
+        return;
+      }
+
+      // Call wallet service to resolve and save bank
+      const result = await this.walletService.resolveAndSaveBank(
+        ctx.session.userId,
+        accountNumber,
+        ctx.session.selectedBankCode
+      );
+
+      // Reset session
+      ctx.session.step = BotSessionStep.IDLE;
+      ctx.session.selectedBankCode = null;
+      ctx.session.addBankFlow = false;
+
+      const message = 
+        `✅ <b>Bank Account Added Successfully</b>\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `🏦 <b>Bank Name:</b> ${result.bankName}\n` +
+        `📋 <b>Account Number:</b> ${accountNumber}\n` +
+        `👤 <b>Account Name:</b> ${result.accountName}\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `Your bank account has been saved and is ready for withdrawals.`;
+
+      const keyboard = new InlineKeyboard()
+        .text('💰 My Wallet', BotCallbackAction.ACTION_WALLET)
+        .row()
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      await ctx.reply(message, { 
+        parse_mode: 'HTML',
+        reply_markup: keyboard 
+      });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in account number input handler: ${err.message}`, err.stack);
+      
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+      
+      await ctx.reply(`❌ Failed to resolve account: ${err.message}. Please check the account number and try again.`, { reply_markup: keyboard });
+    }
+  }
+
+  private async handleWithdrawalAmountInput(ctx: BotContext, text: string) {
+    try {
+      const amount = parseFloat(text);
+      
+      // Validate numeric input
+      if (isNaN(amount) || amount <= 0) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+        
+        await ctx.reply('❌ Invalid amount. Please enter a valid number (e.g. 1000).', { reply_markup: keyboard });
+        return;
+      }
+
+      if (!ctx.session.userId) {
+        await ctx.reply('Session expired. Please start over with /wallet');
+        return;
+      }
+
+      // Check wallet balance
+      const walletData = await this.walletService.getWalletBalance(ctx.session.userId);
+      
+      if (amount > walletData.nairaBalance) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+        
+        await ctx.reply(`❌ Insufficient balance. Your available balance is ₦${walletData.formattedBalance}`, { reply_markup: keyboard });
+        return;
+      }
+
+      // Get saved banks for selection
+      if (walletData.savedBanks.length === 0) {
+        await ctx.reply('No saved bank accounts found. Please add a bank account first.');
+        await this.handleBank(ctx);
+        return;
+      }
+
+      ctx.session.withdrawalAmount = amount;
+      ctx.session.step = BotSessionStep.AWAITING_WITHDRAWAL_BANK;
+
+      // Build keyboard with saved banks
+      const keyboard = new InlineKeyboard();
+      walletData.savedBanks.forEach((bank, index) => {
+        keyboard.text(`${bank.bankName} - ${bank.accountNumber}`, `BANK_SELECT_${bank.id}`);
+        if ((index + 1) % 2 === 0 || index === walletData.savedBanks.length - 1) {
+          keyboard.row();
+        }
+      });
+      keyboard.text('⬅️ Back', BotCallbackAction.ACTION_BACK);
+      keyboard.text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      const message = `Select bank account for withdrawal of ₦${amount.toLocaleString()}:`;
+
+      await ctx.reply(message, { reply_markup: keyboard });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in withdrawal amount input handler: ${err.message}`, err.stack);
       await ctx.reply('Sorry, something went wrong. Please try again.');
     }
   }
@@ -1167,6 +1336,299 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async handleBankCommand(ctx: BotContext) {
+    try {
+      if (!ctx.from) {
+        await ctx.reply('Unable to identify user. Please try again.');
+        return;
+      }
+
+      const telegramId = BigInt(ctx.from.id);
+      const user = await this.usersService.findOrCreateUser({
+        telegramId,
+        username: ctx.from.username,
+        firstName: ctx.from.first_name,
+      });
+
+      ctx.session.userId = user.id;
+      await this.handleBank(ctx);
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in /bank command: ${err.message}`, err.stack);
+      await ctx.reply('Sorry, something went wrong. Please try again.');
+    }
+  }
+
+  private async handleWalletCommand(ctx: BotContext) {
+    try {
+      if (!ctx.from) {
+        await ctx.reply('Unable to identify user. Please try again.');
+        return;
+      }
+
+      const telegramId = BigInt(ctx.from.id);
+      const user = await this.usersService.findOrCreateUser({
+        telegramId,
+        username: ctx.from.username,
+        firstName: ctx.from.first_name,
+      });
+
+      ctx.session.userId = user.id;
+      await this.handleWallet(ctx);
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in /wallet command: ${err.message}`, err.stack);
+      await ctx.reply('Sorry, something went wrong. Please try again.');
+    }
+  }
+
+  private async handleBank(ctx: BotContext) {
+    try {
+      if (!ctx.session.userId) {
+        await ctx.reply('Unable to identify user. Please start over with /start');
+        return;
+      }
+
+      ctx.session.step = BotSessionStep.AWAITING_BANK_SELECTION;
+      ctx.session.addBankFlow = true;
+
+      // Fetch banks from wallet service
+      const banks = await this.walletService.getBanks();
+
+      // Build keyboard with bank options (limit to first 20 for Telegram)
+      const keyboard = new InlineKeyboard();
+      banks.slice(0, 20).forEach((bank, index) => {
+        keyboard.text(bank.name, `BANK_CODE_${bank.code}`);
+        if ((index + 1) % 2 === 0 || index === Math.min(banks.length, 20) - 1) {
+          keyboard.row();
+        }
+      });
+      keyboard.text('⬅️ Back', BotCallbackAction.ACTION_BACK);
+      keyboard.text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      const message = '🏦 <b>Add Bank Account</b>\n\nSelect your bank from the list below:';
+
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+      }
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in ACTION_BANK handler: ${err.message}`, err.stack);
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
+    }
+  }
+
+  private async handleBankCodeSelection(ctx: BotContext) {
+    try {
+      if (!ctx.callbackQuery?.data) {
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid callback data' });
+        }
+        return;
+      }
+
+      const callbackData = ctx.callbackQuery.data;
+      const bankCode = callbackData.replace('BANK_CODE_', '');
+
+      // Get bank name from the code
+      const banks = await this.walletService.getBanks();
+      const selectedBank = banks.find(b => b.code === bankCode);
+
+      if (!selectedBank) {
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid bank selection' });
+        }
+        return;
+      }
+
+      ctx.session.selectedBankCode = bankCode;
+      ctx.session.step = BotSessionStep.AWAITING_ACCOUNT_NUMBER;
+
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      const message = `📝 <b>Enter Account Number</b>\n\nYou selected: ${selectedBank.name}\n\nPlease enter your 10-digit NUBAN account number:`;
+
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+      }
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in bank code selection handler: ${err.message}`, err.stack);
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
+    }
+  }
+
+  private async handleWallet(ctx: BotContext) {
+    try {
+      if (!ctx.session.userId) {
+        await ctx.reply('Unable to identify user. Please start over with /start');
+        return;
+      }
+
+      // Get wallet balance and saved banks
+      const walletData = await this.walletService.getWalletBalance(ctx.session.userId);
+
+      const formattedBalance = walletData.formattedBalance;
+      const savedBanks = walletData.savedBanks;
+
+      // Build message with wallet info
+      let message = 
+        `💰 <b>My Wallet</b>\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `💵 <b>Balance:</b> ₦${formattedBalance}\n\n`;
+
+      if (savedBanks.length > 0) {
+        message += `🏦 <b>Saved Banks:</b>\n`;
+        savedBanks.forEach((bank, index) => {
+          message += `${index + 1}. ${bank.bankName} - ${bank.accountNumber}\n`;
+        });
+        message += '\n';
+      } else {
+        message += `🏦 <b>Saved Banks:</b> None\n\n`;
+      }
+
+      message += `━━━━━━━━━━━━━━━━━━`;
+
+      // Build keyboard
+      const keyboard = new InlineKeyboard()
+        .text('➕ Add Bank', BotCallbackAction.ACTION_BANK)
+        .row();
+
+      if (savedBanks.length > 0) {
+        keyboard.text('💸 Withdraw', BotCallbackAction.ACTION_WITHDRAW);
+        keyboard.row();
+      }
+
+      keyboard.text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+      }
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in ACTION_WALLET handler: ${err.message}`, err.stack);
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
+    }
+  }
+
+  private async handleWithdraw(ctx: BotContext) {
+    try {
+      if (!ctx.session.userId) {
+        await ctx.reply('Unable to identify user. Please start over with /start');
+        return;
+      }
+
+      // Get user's saved banks
+      const walletData = await this.walletService.getWalletBalance(ctx.session.userId);
+
+      if (walletData.savedBanks.length === 0) {
+        const keyboard = new InlineKeyboard()
+          .text('➕ Add Bank', BotCallbackAction.ACTION_BANK)
+          .row()
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+        await ctx.reply(
+          '❌ You have no saved bank accounts. Please add a bank account first.',
+          { reply_markup: keyboard }
+        );
+        return;
+      }
+
+      ctx.session.step = BotSessionStep.AWAITING_WITHDRAWAL_AMOUNT;
+
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      const message = 
+        `💸 <b>Withdraw Funds</b>\n\n` +
+        `💵 <b>Available Balance:</b> ₦${walletData.formattedBalance}\n\n` +
+        `Please enter the amount you want to withdraw (₦):`;
+
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { 
+          parse_mode: 'HTML',
+          reply_markup: keyboard 
+        });
+      }
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in ACTION_WITHDRAW handler: ${err.message}`, err.stack);
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
+    }
+  }
+
   private async handleBack(ctx: BotContext) {
     try {
       const currentStep = ctx.session.step;
@@ -1384,9 +1846,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const keyboard = new InlineKeyboard()
       .text('⛽ Buy Crypto', BotCallbackAction.ACTION_BUY_GAS)
       .row()
-      .text('� Sell Crypto (Bybit UID)', BotCallbackAction.ACTION_SELL_CRYPTO)
+      .text('💰 Sell Crypto (Bybit UID)', BotCallbackAction.ACTION_SELL_CRYPTO)
       .row()
-      .text('�📜 My Orders', BotCallbackAction.ACTION_MY_ORDERS)
+      .text('💵 My Wallet', BotCallbackAction.ACTION_WALLET)
+      .text('📜 My Orders', BotCallbackAction.ACTION_MY_ORDERS)
+      .row()
       .text('❓ Help', BotCallbackAction.ACTION_HELP);
 
     const message = firstName 
@@ -1448,20 +1912,21 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const corporateBybitUid = process.env.CORPORATE_BYBIT_UID || '118368783';
 
       const message = 
-        `💰 <b>Sell Crypto (Bybit UID)</b>\n\n` +
+        `💰 <b>Sell USDT (Bybit UID)</b>\n\n` +
         `━━━━━━━━━━━━━━━━━━\n` +
         `📋 <b>Instructions:</b>\n` +
-        `1. Send crypto to our corporate Bybit UID: <code>${corporateBybitUid}</code>\n` +
+        `1. Send USDT to our corporate Bybit UID: <code>${corporateBybitUid}</code>\n` +
         `2. Take a screenshot of the transaction\n` +
         `3. Enter the amount you sent\n` +
         `4. Provide your Bybit Transaction ID\n` +
         `5. Choose payout destination\n\n` +
         `━━━━━━━━━━━━━━━━━━\n` +
         `⚠️ <b>Important:</b>\n` +
-        `• Minimum: 10 USDT/TON/SOL\n` +
-        `• Quote locked for 10 minutes\n` +
+        `• Only USDT is supported\n` +
+        `• Minimum: 10 USDT\n` +
+        `• Rate based on admin settings\n` +
         `• Payout after admin verification\n\n` +
-        `Please enter the amount you sent:`;
+        `Please enter the amount of USDT you sent:`;
 
       const keyboard = new InlineKeyboard()
         .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
@@ -1506,37 +1971,12 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
       const callbackData = ctx.callbackQuery.data;
       
-      // Map callback to crypto asset
-      const assetMap: Record<string, 'USDT' | 'TON' | 'SOL'> = {
-        [BotCallbackCryptoAsset.CRYPTO_USDT]: 'USDT',
-        [BotCallbackCryptoAsset.CRYPTO_TON]: 'TON',
-        [BotCallbackCryptoAsset.CRYPTO_SOL]: 'SOL',
-      };
-
-      const selectedAsset = assetMap[callbackData];
-      if (!selectedAsset) {
-        if (ctx.callbackQuery) {
-          await ctx.answerCallbackQuery({ text: 'Invalid crypto asset selection' });
-        }
-        return;
-      }
-
-      // Store the selected asset in the dedicated session field
-      ctx.session.sellCryptoAsset = selectedAsset;
-      ctx.session.step = BotSessionStep.AWAITING_SELL_TX_ID;
-
-      const keyboard = new InlineKeyboard()
-        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
-        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
-
-      const message = `Please enter your Bybit Transaction ID for ${selectedAsset}:`;
-      
+      // USDT-only off-ramp - no asset selection needed
+      // This handler is kept for backward compatibility but shouldn't be called
       if (ctx.callbackQuery) {
-        await ctx.editMessageText(message, { reply_markup: keyboard });
-        await ctx.answerCallbackQuery();
-      } else {
-        await ctx.reply(message, { reply_markup: keyboard });
+        await ctx.answerCallbackQuery({ text: 'USDT-only off-ramp enabled' });
       }
+      return;
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in crypto asset selection handler: ${err.message}`, err.stack);
@@ -1580,8 +2020,14 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      // Submit the off-ramp request with the selected bank
-      await this.submitOfframpRequest(ctx, 'SAVED_BANK', bankId);
+      // Check if this is for withdrawal or off-ramp
+      if (ctx.session.step === BotSessionStep.AWAITING_WITHDRAWAL_BANK) {
+        // Process withdrawal
+        await this.processWithdrawal(ctx, bankId);
+      } else {
+        // Submit the off-ramp request with the selected bank
+        await this.submitOfframpRequest(ctx, 'SAVED_BANK', bankId);
+      }
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in bank selection handler: ${err.message}`, err.stack);
@@ -1595,6 +2041,58 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       } else {
         await ctx.reply('Error processing request. Please try again.');
       }
+    }
+  }
+
+  private async processWithdrawal(ctx: BotContext, bankId: string) {
+    try {
+      if (!ctx.session.userId || !ctx.session.withdrawalAmount) {
+        await ctx.reply('Session expired. Please start over with /wallet');
+        return;
+      }
+
+      const amount = ctx.session.withdrawalAmount;
+
+      // Process withdrawal via wallet service
+      const result = await this.walletService.withdraw(
+        ctx.session.userId,
+        amount,
+        bankId
+      );
+
+      // Reset session
+      ctx.session.step = BotSessionStep.IDLE;
+      ctx.session.withdrawalAmount = null;
+      ctx.session.withdrawalBankId = null;
+
+      const message = 
+        `✅ <b>Withdrawal Processed Successfully</b>\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `💸 <b>Amount:</b> ₦${amount.toLocaleString()}\n` +
+        `📝 <b>Reference:</b> ${result.reference}\n` +
+        `🆔 <b>Transaction ID:</b> ${result.transactionId}\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `Your withdrawal has been initiated and will be processed within 24-48 hours.`;
+
+      const keyboard = new InlineKeyboard()
+        .text('💰 My Wallet', BotCallbackAction.ACTION_WALLET)
+        .row()
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      await ctx.reply(message, { 
+        parse_mode: 'HTML',
+        reply_markup: keyboard 
+      });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error processing withdrawal: ${err.message}`, err.stack);
+      
+      const keyboard = new InlineKeyboard()
+        .text('💰 My Wallet', BotCallbackAction.ACTION_WALLET)
+        .row()
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+      
+      await ctx.reply(`❌ Withdrawal failed: ${err.message}. Please try again.`, { reply_markup: keyboard });
     }
   }
 
@@ -1795,6 +2293,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           { command: 'help', description: '❓ Support & Guide' },
           { command: 'home', description: '🏠 Return to Main Menu' },
           { command: 'link', description: '🔗 Link Web Account' },
+          { command: 'bank', description: '🏦 Add Bank Account' },
+          { command: 'wallet', description: '💰 View Wallet' },
         ]);
         this.logger.log('Bot commands registered successfully');
       } catch (telegramError) {

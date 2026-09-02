@@ -217,6 +217,7 @@ export class WalletService {
 
   async getWalletBalance(userId: string): Promise<{
     nairaBalance: number;
+    formattedBalance: string;
     savedBanks: Array<{
       id: string;
       bankName: string;
@@ -245,8 +246,12 @@ export class WalletService {
         throw new NotFoundException('User not found');
       }
 
+      const numericBalance = Number(user.nairaBalance);
+      const formattedBalance = this.formatNairaAmount(numericBalance);
+
       return {
-        nairaBalance: user.nairaBalance,
+        nairaBalance: numericBalance,
+        formattedBalance,
         savedBanks: user.savedBanks,
       };
     } catch (error) {
@@ -254,6 +259,16 @@ export class WalletService {
       this.logger.error(`Error fetching wallet balance: ${err.message}`, err.stack);
       throw err;
     }
+  }
+
+  /**
+   * Format numeric amount as Nigerian Naira with proper locale formatting
+   */
+  private formatNairaAmount(amount: number): string {
+    return amount.toLocaleString('en-NG', { 
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2 
+    });
   }
 
   async withdraw(
@@ -281,8 +296,11 @@ export class WalletService {
         throw new NotFoundException('User not found');
       }
 
-      // Check if user has sufficient balance
-      if (amount > user.nairaBalance) {
+      // Check if user has sufficient balance using strict numeric arithmetic
+      const currentBalance = Number(user.nairaBalance);
+      const withdrawalAmount = Number(amount);
+      
+      if (withdrawalAmount > currentBalance) {
         throw new BadRequestException('Insufficient balance');
       }
 
@@ -322,8 +340,8 @@ export class WalletService {
         },
       });
 
-      // Convert amount to kobo
-      const amountInKobo = Math.round(amount * 100);
+      // Convert amount to kobo using strict numeric arithmetic
+      const amountInKobo = Math.round(withdrawalAmount * 100);
 
       // Initiate Paystack transfer
       const transferResponse = await firstValueFrom(
@@ -361,13 +379,13 @@ export class WalletService {
         throw new BadRequestException(`Transfer failed: ${transferResponse.data.message}`);
       }
 
-      // Deduct from user balance
+      // Deduct from user balance using strict numeric arithmetic
+      const newBalance = currentBalance - withdrawalAmount;
+      
       await this.prisma.user.update({
         where: { id: userId },
         data: {
-          nairaBalance: {
-            decrement: amount,
-          },
+          nairaBalance: newBalance,
         },
       });
 
@@ -401,13 +419,25 @@ export class WalletService {
 
   async addFunds(userId: string, amount: number, type: 'REFERRAL_EARNING' | 'BONUS_DEPOSIT' | 'REFUND' | 'OFFRAMP_PAYOUT', reference: string, metadata?: any): Promise<void> {
     try {
-      // Add to user balance
+      // Ensure strict numeric arithmetic
+      const numericAmount = Number(amount);
+      
+      // Get current user balance for logging
+      const currentUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { nairaBalance: true }
+      });
+
+      const currentBalance = Number(currentUser?.nairaBalance || 0);
+      const newBalance = currentBalance + numericAmount;
+
+      this.logger.log(`Adding funds to user ${userId}: ${currentBalance} + ${numericAmount} = ${newBalance}`);
+
+      // Add to user balance using strict numeric arithmetic
       await this.prisma.user.update({
         where: { id: userId },
         data: {
-          nairaBalance: {
-            increment: amount,
-          },
+          nairaBalance: newBalance,
         },
       });
 
@@ -415,7 +445,7 @@ export class WalletService {
       await this.prisma.walletTransaction.create({
         data: {
           userId,
-          amount,
+          amount: numericAmount,
           type,
           status: 'SUCCESS',
           reference,
@@ -423,7 +453,7 @@ export class WalletService {
         },
       });
 
-      this.logger.log(`Added ${amount} NGN to user ${userId} wallet (type: ${type})`);
+      this.logger.log(`Added ${numericAmount} NGN to user ${userId} wallet (type: ${type}). New balance: ${newBalance}`);
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error adding funds: ${err.message}`, err.stack);

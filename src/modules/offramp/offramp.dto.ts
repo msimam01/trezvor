@@ -2,8 +2,9 @@ import { IsString, IsNumber, IsEnum, IsOptional, IsUUID } from 'class-validator'
 
 export enum CryptoAsset {
   USDT = 'USDT',
-  TON = 'TON',
-  SOL = 'SOL',
+  // TON and SOL are temporarily disabled for off-ramp
+  // TON = 'TON',
+  // SOL = 'SOL',
 }
 
 export enum PayoutDestination {

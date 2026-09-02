@@ -319,13 +319,20 @@ export class ReferralService {
 
       // Start transaction to update records atomically
       await this.prisma.$transaction(async (prisma) => {
+        // Get current referrer balance for strict numeric arithmetic
+        const currentReferrer = await prisma.user.findUnique({
+          where: { id: referrer.id },
+          select: { nairaBalance: true }
+        });
+
+        const currentBalance = Number(currentReferrer?.nairaBalance || 0);
+        const newBalance = currentBalance + commissionAmount;
+
         // Credit referrer's nairaBalance (direct balance, not unpaid affiliate balance)
         await prisma.user.update({
           where: { id: referrer.id },
           data: {
-            nairaBalance: {
-              increment: commissionAmount,
-            },
+            nairaBalance: newBalance,
           },
         });
 

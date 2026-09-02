@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { TelegramLinkModal } from "@/components/telegram-link-modal";
-import { BarChart3, Package, Handshake, DollarSign, RotateCcw, CreditCard, Shuffle, Star, Settings, LogOut } from "lucide-react";
+import { BarChart3, Package, Handshake, DollarSign, RotateCcw, CreditCard, Shuffle, Star, Settings, LogOut, Wallet } from "lucide-react";
 
 interface UserSidebarProps {
   isAdmin?: boolean;
@@ -21,6 +21,11 @@ const navItems = [
     label: "My Gas Orders",
     href: "/dashboard/orders",
     icon: Package,
+  },
+  {
+    label: "Wallet & Banking",
+    href: "/dashboard/wallet",
+    icon: Wallet,
   },
   {
     label: "Referral & Earnings",

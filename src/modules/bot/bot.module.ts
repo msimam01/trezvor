@@ -11,9 +11,10 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 import { ReferralModule } from '../referrals/referral.module';
 import { OfframpModule } from '../offramp/offramp.module';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
-  imports: [HttpModule, UsersModule, OrdersModule, SettingsModule, PaymentsModule, forwardRef(() => QueueModule), OracleModule, PrismaModule, AuthModule, forwardRef(() => ReferralModule), OfframpModule],
+  imports: [HttpModule, UsersModule, OrdersModule, SettingsModule, PaymentsModule, forwardRef(() => QueueModule), OracleModule, PrismaModule, AuthModule, forwardRef(() => ReferralModule), OfframpModule, WalletModule],
   providers: [BotService],
   exports: [BotService],
 })

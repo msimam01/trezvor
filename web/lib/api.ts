@@ -122,6 +122,7 @@ export interface FeeSettings {
   maxFeeCap: number;
   referralCommissionRate: number;
   isVirtualAccountEnabled: boolean;
+  usdtBuyRateNgn: number;
 }
 
 export interface LiquidityThreshold {
@@ -427,6 +428,58 @@ export const api = {
     status: string;
   }> => {
     const response = await apiClient.get('/auth/profile');
+    return response.data;
+  },
+
+  // Wallet Endpoints
+  getWalletBalance: async (): Promise<{
+    nairaBalance: number;
+    formattedBalance: string;
+    savedBanks: Array<{
+      id: string;
+      bankName: string;
+      accountNumber: string;
+      accountName: string;
+      isVerified: boolean;
+    }>;
+  }> => {
+    const response = await apiClient.get('/wallet/balance');
+    return response.data;
+  },
+
+  getBanks: async (): Promise<Array<{
+    name: string;
+    code: string;
+    longcode: string;
+    gateway: string;
+    pay_with_bank: boolean;
+    active: boolean;
+    country: string;
+    currency: string;
+    type: string;
+    id: number;
+    slug: string;
+  }>> => {
+    const response = await apiClient.get('/wallet/public/banks');
+    return response.data;
+  },
+
+  resolveBank: async (data: { accountNumber: string; bankCode: string }): Promise<{
+    accountName: string;
+    bankName: string;
+    paystackRecipientCode: string;
+  }> => {
+    const response = await apiClient.post('/wallet/bank/resolve', data);
+    return response.data;
+  },
+
+  withdraw: async (data: { amount: number; bankAccountId: string }): Promise<{
+    success: boolean;
+    message: string;
+    transactionId?: string;
+    reference?: string;
+  }> => {
+    const response = await apiClient.post('/wallet/withdraw', data);
     return response.data;
   },
 };

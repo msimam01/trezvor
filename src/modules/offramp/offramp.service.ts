@@ -2,6 +2,7 @@ import { Injectable, Logger, BadRequestException, NotFoundException } from '@nes
 import { PrismaService } from '../../prisma/prisma.service';
 import { OracleService } from '../oracle/oracle.service';
 import { WalletService } from '../wallet/wallet.service';
+import { SettingsService } from '../settings/settings.service';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { 
@@ -24,6 +25,7 @@ export class OfframpService {
     private readonly prisma: PrismaService,
     private readonly oracleService: OracleService,
     private readonly walletService: WalletService,
+    private readonly settingsService: SettingsService,
     private readonly httpService: HttpService,
   ) {
     this.corporateBybitUid = process.env.CORPORATE_BYBIT_UID || '118368783';
@@ -59,15 +61,14 @@ export class OfframpService {
       }
 
       // Get current exchange rate for the crypto asset
-      // Map crypto assets to oracle chain types
-      const chainMapping: Record<CryptoAsset, 'SOLANA' | 'BASE' | 'TON'> = {
-        [CryptoAsset.USDT]: 'BASE', // Use BASE as proxy for USDT rate
-        [CryptoAsset.TON]: 'TON',
-        [CryptoAsset.SOL]: 'SOLANA',
-      };
+      // Only USDT is supported - use admin settings rate
+      if (dto.cryptoAsset !== CryptoAsset.USDT) {
+        throw new BadRequestException('Only USDT is currently supported for off-ramp');
+      }
 
-      const chain = chainMapping[dto.cryptoAsset];
-      const rateNgn = await this.oracleService.getPriceInNgn(chain);
+      // Use admin USDT buy rate
+      const adminSettings = await this.settingsService.getAdminSettings();
+      const rateNgn = adminSettings.usdtBuyRateNgn;
 
       // Calculate NGN value
       const ngnValue = dto.cryptoAmount * rateNgn;

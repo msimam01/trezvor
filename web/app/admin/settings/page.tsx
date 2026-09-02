@@ -25,6 +25,7 @@ export default function AdminSettingsPage() {
     maxFeeCap: 200,
     referralCommissionRate: 20,
     isVirtualAccountEnabled: false,
+    usdtBuyRateNgn: 1550,
   });
   const [liquidityThresholds, setLiquidityThresholds] = useState<{
     SOLANA: { minBalance: number; alertThreshold: number };
@@ -47,6 +48,7 @@ export default function AdminSettingsPage() {
           maxFeeCap: settings.feeSettings.maxFeeCap ?? 200,
           referralCommissionRate: settings.feeSettings.referralCommissionRate ?? 20,
           isVirtualAccountEnabled: settings.feeSettings.isVirtualAccountEnabled ?? false,
+          usdtBuyRateNgn: settings.feeSettings.usdtBuyRateNgn ?? 1550,
         });
       }
       if (settings.liquidityThresholds) {
@@ -211,6 +213,26 @@ export default function AdminSettingsPage() {
                       </div>
                     </div>
                   </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="usdtBuyRateNgn" className="text-[#EDEFEA]">
+                    USDT Buy Rate (NGN per 1 USDT)
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[#8B98A5]">₦</span>
+                    <Input
+                      id="usdtBuyRateNgn"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={feeSettings.usdtBuyRateNgn}
+                      onChange={(e) => handleFeeSettingsChange("usdtBuyRateNgn", e.target.value)}
+                      className={`max-w-xs ${inputClass}`}
+                    />
+                    <span className="text-[#8B98A5]">per USDT</span>
+                  </div>
+                  <p className="text-xs text-[#4A5560]">Rate used to calculate NGN payout when users sell USDT via off-ramp</p>
                 </div>
               </div>
             </div>

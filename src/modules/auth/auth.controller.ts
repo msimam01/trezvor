@@ -405,26 +405,40 @@ export class AuthController {
         });
       }
 
-      // Add telegram user's balance to web user
+      // Add telegram user's balance to web user using strict numeric arithmetic
       if (telegramUser.nairaBalance > 0) {
+        const currentWebUser = await prisma.user.findUnique({
+          where: { id: webUser.id },
+          select: { nairaBalance: true }
+        });
+
+        const currentBalance = Number(currentWebUser?.nairaBalance || 0);
+        const telegramBalance = Number(telegramUser.nairaBalance);
+        const newBalance = currentBalance + telegramBalance;
+
         await prisma.user.update({
           where: { id: webUser.id },
           data: {
-            nairaBalance: {
-              increment: telegramUser.nairaBalance,
-            },
+            nairaBalance: newBalance,
           },
         });
       }
 
-      // Add telegram user's unpaid affiliate balance to web user
+      // Add telegram user's unpaid affiliate balance to web user using strict numeric arithmetic
       if (telegramUser.unpaidAffiliateBalance > 0) {
+        const currentWebUser = await prisma.user.findUnique({
+          where: { id: webUser.id },
+          select: { unpaidAffiliateBalance: true }
+        });
+
+        const currentUnpaidBalance = Number(currentWebUser?.unpaidAffiliateBalance || 0);
+        const telegramUnpaidBalance = Number(telegramUser.unpaidAffiliateBalance);
+        const newUnpaidBalance = currentUnpaidBalance + telegramUnpaidBalance;
+
         await prisma.user.update({
           where: { id: webUser.id },
           data: {
-            unpaidAffiliateBalance: {
-              increment: telegramUser.unpaidAffiliateBalance,
-            },
+            unpaidAffiliateBalance: newUnpaidBalance,
           },
         });
       }
