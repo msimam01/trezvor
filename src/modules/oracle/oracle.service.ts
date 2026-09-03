@@ -14,12 +14,14 @@ export class OracleService {
     SOLANA: 'solana',
     BASE: 'ethereum',
     TON: 'the-open-network',
+    BSC: 'binancecoin',
   };
 
   private readonly BINANCE_SYMBOLS = {
     SOLANA: 'SOLUSDT',
     BASE: 'ETHUSDT',
     TON: 'TONUSDT',
+    BSC: 'BNBUSDT',
   };
 
   // Emergency fallback rates (conservative estimates)
@@ -27,6 +29,7 @@ export class OracleService {
     SOLANA: 240000, // 1 SOL = ₦240,000
     BASE: 4500000,  // 1 ETH = ₦4,500,000
     TON: 9000,      // 1 TON = ₦9,000
+    BSC: 700000,    // 1 BNB = ₦700,000
   };
 
   // USDT/NGN fallback rate

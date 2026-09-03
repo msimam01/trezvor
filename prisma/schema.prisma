@@ -215,6 +215,7 @@ enum SupportedChain {
   SOLANA
   BASE
   TON
+  BSC
 }
 
 enum PaymentGateway {

@@ -1,5 +1,4 @@
 import { Module, forwardRef } from '@nestjs/common';
-import { HttpModule } from '@nestjs/axios';
 import { BotService } from './bot.service';
 import { UsersModule } from '../users/users.module';
 import { OrdersModule } from '../orders/orders.module';
@@ -12,6 +11,7 @@ import { AuthModule } from '../auth/auth.module';
 import { ReferralModule } from '../referrals/referral.module';
 import { OfframpModule } from '../offramp/offramp.module';
 import { WalletModule } from '../wallet/wallet.module';
+import { HttpModule } from '@nestjs/axios';
 
 @Module({
   imports: [HttpModule, UsersModule, OrdersModule, SettingsModule, PaymentsModule, forwardRef(() => QueueModule), OracleModule, PrismaModule, AuthModule, forwardRef(() => ReferralModule), OfframpModule, WalletModule],

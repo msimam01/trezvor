@@ -1,7 +1,6 @@
-import { Injectable, Logger, NotFoundException, Inject, Optional } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
-import { BotService } from '../bot/bot.service';
 
 export interface ReferralStats {
   referralCode: string;
@@ -35,7 +34,6 @@ export class ReferralService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
-    @Optional() private readonly botService?: BotService,
   ) {
     this.defaultBonusAmount = this.configService.get<number>('REFERRAL_BONUS_AMOUNT') || 200.0;
   }
@@ -429,23 +427,9 @@ export class ReferralService {
     commissionAmount: number,
     commissionRate: number,
   ): Promise<void> {
-    // Send Telegram notification if botService is available and referrer has telegramId
-    if (this.botService && referrer.telegramId) {
-      try {
-        await this.botService.sendNotification(
-          referrer.telegramId,
-          `💰 Referral Earned! You earned ₦${commissionAmount} (${commissionRate}%) from your referral's gas purchase.`,
-        );
-        this.logger.log(`Telegram notification sent to referrer ${referrer.id}`);
-      } catch (error) {
-        const err = error as Error;
-        this.logger.error(`Failed to send Telegram notification to referrer ${referrer.id}: ${err.message}`);
-      }
-    } else {
-      // Fallback to logging if botService is not available
-      this.logger.log(
-        `💰 Notification: Referrer ${referrer.firstName || referrer.username} earned ₦${commissionAmount} (${commissionRate}%) from their referral's gas purchase.`,
-      );
-    }
+    // Log notification for now - Telegram notifications would be handled by a separate notification service
+    this.logger.log(
+      `💰 Notification: Referrer ${referrer.firstName || referrer.username} earned ₦${commissionAmount} (${commissionRate}%) from their referral's gas purchase.`,
+    );
   }
 }

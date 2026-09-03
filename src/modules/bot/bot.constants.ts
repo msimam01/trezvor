@@ -16,6 +16,7 @@ export enum BotCallbackChain {
   CHAIN_SOLANA = 'CHAIN_SOLANA',
   CHAIN_BASE = 'CHAIN_BASE',
   CHAIN_TON = 'CHAIN_TON',
+  CHAIN_BSC = 'CHAIN_BSC',
 }
 
 export enum BotCallbackAmount {
@@ -56,6 +57,7 @@ export enum BotSessionStep {
   AWAITING_ACCOUNT_NUMBER = 'AWAITING_ACCOUNT_NUMBER',
   AWAITING_WITHDRAWAL_AMOUNT = 'AWAITING_WITHDRAWAL_AMOUNT',
   AWAITING_WITHDRAWAL_BANK = 'AWAITING_WITHDRAWAL_BANK',
+  AWAITING_WITHDRAWAL_CONFIRMATION = 'AWAITING_WITHDRAWAL_CONFIRMATION',
 }
 
 export const AMOUNT_NAIRA_MAP: Partial<Record<BotCallbackAmount, number>> = {
@@ -68,4 +70,5 @@ export const CHAIN_DISPLAY_NAMES: Record<BotCallbackChain, string> = {
   [BotCallbackChain.CHAIN_SOLANA]: 'Solana (SOL)',
   [BotCallbackChain.CHAIN_BASE]: 'Base (ETH)',
   [BotCallbackChain.CHAIN_TON]: 'TON (TON)',
+  [BotCallbackChain.CHAIN_BSC]: 'BSC (BNB)',
 };

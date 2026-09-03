@@ -9,6 +9,7 @@ const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1),
   TELEGRAM_BOT_USERNAME: z.string().optional().default(''),
   APP_BASE_URL: z.string().optional().default('http://localhost:3000'),
+  API_BASE_URL: z.string().optional().default('http://localhost:5000'),
   PAYSTACK_SECRET_KEY: z.string().min(1),
   ENABLE_BOT: z.string().optional().default('true'),
   // Web3 Configuration - Module 6 (optional in development)
@@ -19,6 +20,8 @@ const envSchema = z.object({
   TON_RPC_URL: z.string().optional(),
   TON_API_KEY: z.string().optional(),
   TON_VAULT_MNEMONIC: z.string().optional(),
+  BSC_RPC_URL: z.string().optional(),
+  BSC_VAULT_PRIVATE_KEY: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

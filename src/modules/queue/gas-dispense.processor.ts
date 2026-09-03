@@ -110,6 +110,7 @@ export class GasDispenseProcessor extends WorkerHost {
         SOLANA: 'SOL',
         BASE: 'ETH',
         TON: 'TON',
+        BSC: 'BNB',
       }[order.chain] || 'tokens';
 
       // Send Telegram success notification to the user

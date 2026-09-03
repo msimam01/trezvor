@@ -31,6 +31,7 @@ export class MailService {
         SOLANA: 'SOL',
         BASE: 'ETH',
         TON: 'TON',
+        BSC: 'BNB',
       }[chain] || 'tokens';
 
       const html = `

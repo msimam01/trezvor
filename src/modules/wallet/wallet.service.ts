@@ -3,6 +3,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../../prisma/prisma.service';
+import { WalletValidatorService, ChainType } from './wallet-validator.service';
 
 export interface PaystackBank {
   name: string;
@@ -68,6 +69,7 @@ export class WalletService {
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly walletValidator: WalletValidatorService,
   ) {
     this.paystackSecretKey = this.configService.get<string>('PAYSTACK_SECRET_KEY') || '';
     if (!this.paystackSecretKey) {
@@ -287,6 +289,12 @@ export class WalletService {
         throw new BadRequestException('Amount must be greater than 0');
       }
 
+      // Check minimum withdrawal amount (₦500)
+      const MIN_WITHDRAWAL_AMOUNT = 500;
+      if (amount < MIN_WITHDRAWAL_AMOUNT) {
+        throw new BadRequestException(`Minimum withdrawal amount is ₦${MIN_WITHDRAWAL_AMOUNT}`);
+      }
+
       // Get user
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
@@ -301,7 +309,7 @@ export class WalletService {
       const withdrawalAmount = Number(amount);
       
       if (withdrawalAmount > currentBalance) {
-        throw new BadRequestException('Insufficient balance');
+        throw new BadRequestException(`Insufficient balance. Your current balance is ₦${currentBalance.toLocaleString()}`);
       }
 
       // Get saved bank account
@@ -318,7 +326,14 @@ export class WalletService {
       }
 
       if (!savedBank.paystackRecipientCode) {
-        throw new BadRequestException('Bank account is not properly configured for transfers');
+        this.logger.error(`Bank account ${bankAccountId} has no Paystack recipient code`);
+        throw new BadRequestException('Bank account is not properly configured for transfers. Please re-add your bank account.');
+      }
+
+      // Verify recipient code is valid format
+      if (!savedBank.paystackRecipientCode.startsWith('RCP_')) {
+        this.logger.error(`Invalid recipient code format: ${savedBank.paystackRecipientCode}`);
+        throw new BadRequestException('Invalid recipient code. Please re-add your bank account.');
       }
 
       // Generate reference for transaction
@@ -336,6 +351,7 @@ export class WalletService {
             bankAccountId,
             bankName: savedBank.bankName,
             accountNumber: savedBank.accountNumber,
+            accountName: savedBank.accountName,
           },
         },
       });
@@ -344,26 +360,52 @@ export class WalletService {
       const amountInKobo = Math.round(withdrawalAmount * 100);
 
       // Initiate Paystack transfer
-      const transferResponse = await firstValueFrom(
-        this.httpService.post<PaystackTransferResponse>(
-          `${this.paystackApiUrl}/transfer`,
-          {
-            source: 'balance',
-            amount: amountInKobo,
-            recipient: savedBank.paystackRecipientCode,
-            reason: 'Wallet withdrawal',
-            reference,
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${this.paystackSecretKey}`,
-              'Content-Type': 'application/json',
+      this.logger.log(`Initiating Paystack transfer: amount=${amountInKobo} kobo, recipient=${savedBank.paystackRecipientCode}, reference=${reference}`);
+      
+      let transferResponse: any;
+      
+      try {
+        transferResponse = await firstValueFrom(
+          this.httpService.post<PaystackTransferResponse>(
+            `${this.paystackApiUrl}/transfer`,
+            {
+              source: 'balance',
+              amount: amountInKobo,
+              recipient: savedBank.paystackRecipientCode,
+              reason: `Wallet withdrawal - ${reference}`,
+              reference,
             },
-          },
-        ),
-      );
+            {
+              headers: {
+                Authorization: `Bearer ${this.paystackSecretKey}`,
+                'Content-Type': 'application/json',
+              },
+            },
+          ),
+        );
 
-      if (!transferResponse.data.status) {
+        this.logger.log(`Paystack transfer response: ${JSON.stringify(transferResponse.data)}`);
+
+        if (!transferResponse.data.status) {
+          // Update transaction as failed
+          await this.prisma.walletTransaction.update({
+            where: { id: transaction.id },
+            data: {
+              status: 'FAILED',
+              metadata: {
+                ...transaction.metadata as any,
+                paystackError: transferResponse.data.message,
+              },
+            },
+          });
+
+          this.logger.error(`Paystack transfer failed: ${transferResponse.data.message}`);
+          throw new BadRequestException(`Transfer failed: ${transferResponse.data.message}`);
+        }
+      } catch (axiosError) {
+        const err = axiosError as any;
+        this.logger.error(`Paystack API error: ${err.message}`, err.response?.data);
+        
         // Update transaction as failed
         await this.prisma.walletTransaction.update({
           where: { id: transaction.id },
@@ -371,12 +413,29 @@ export class WalletService {
             status: 'FAILED',
             metadata: {
               ...transaction.metadata as any,
-              paystackError: transferResponse.data.message,
+              paystackError: err.response?.data?.message || err.message,
+              paystackErrorDetails: err.response?.data,
             },
           },
         });
 
-        throw new BadRequestException(`Transfer failed: ${transferResponse.data.message}`);
+        // Handle specific Paystack errors
+        const errorMessage = err.response?.data?.message || err.response?.data?.error || err.message;
+        
+        if (err.response?.status === 400) {
+          // Common 400 errors - check for specific messages
+          if (errorMessage.includes('balance') || errorMessage.includes('Insufficient')) {
+            throw new BadRequestException('Insufficient Paystack balance. Please contact support.');
+          } else if (errorMessage.includes('recipient') || errorMessage.includes('Recipient')) {
+            throw new BadRequestException('Invalid recipient. Please re-add your bank account.');
+          } else if (errorMessage.includes('reference') || errorMessage.includes('Reference')) {
+            throw new BadRequestException('Duplicate transaction reference. Please try again.');
+          } else if (errorMessage.includes('amount') || errorMessage.includes('Amount')) {
+            throw new BadRequestException('Invalid amount format. Please try again.');
+          }
+        }
+        
+        throw new BadRequestException(`Transfer failed: ${errorMessage}`);
       }
 
       // Deduct from user balance using strict numeric arithmetic
@@ -396,13 +455,13 @@ export class WalletService {
           status: 'SUCCESS',
           metadata: {
             ...transaction.metadata as any,
-            transferCode: transferResponse.data.data.transfer_code,
-            transferStatus: transferResponse.data.data.status,
+            transferCode: transferResponse?.data?.data?.transfer_code,
+            transferStatus: transferResponse?.data?.data?.status,
           },
         },
       });
 
-      this.logger.log(`Withdrawal of ${amount} NGN processed for user ${userId}`);
+      this.logger.log(`Withdrawal of ₦${withdrawalAmount} processed for user ${userId}. Reference: ${reference}`);
 
       return {
         success: true,

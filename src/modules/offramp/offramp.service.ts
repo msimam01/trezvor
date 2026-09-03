@@ -274,31 +274,61 @@ export class OfframpService {
             throw new BadRequestException('Saved bank account is not properly configured for transfers');
           }
 
+          // Verify recipient code format
+          if (!request.savedBank.paystackRecipientCode.startsWith('RCP_')) {
+            this.logger.error(`Invalid recipient code format in offramp: ${request.savedBank.paystackRecipientCode}`);
+            throw new BadRequestException('Invalid recipient code. Please re-add your bank account.');
+          }
+
           // Convert amount to kobo
           const amountInKobo = Math.round(request.ngnValue * 100);
           const reference = `OFFRAMP_TRANSFER_${requestId}_${Date.now()}`;
 
-          const transferResponse = await firstValueFrom(
-            this.httpService.post(
-              'https://api.paystack.co/transfer',
-              {
-                source: 'balance',
-                amount: amountInKobo,
-                recipient: request.savedBank.paystackRecipientCode,
-                reason: `Off-ramp payout for ${request.cryptoAmount} ${request.cryptoAsset}`,
-                reference,
-              },
-              {
-                headers: {
-                  Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-                  'Content-Type': 'application/json',
-                },
-              },
-            ),
-          );
+          this.logger.log(`Initiating Paystack transfer for offramp: amount=${amountInKobo} kobo, recipient=${request.savedBank.paystackRecipientCode}, reference=${reference}`);
 
-          if (!transferResponse.data.status) {
-            throw new BadRequestException(`Paystack transfer failed: ${transferResponse.data.message}`);
+          try {
+            const transferResponse = await firstValueFrom(
+              this.httpService.post(
+                'https://api.paystack.co/transfer',
+                {
+                  source: 'balance',
+                  amount: amountInKobo,
+                  recipient: request.savedBank.paystackRecipientCode,
+                  reason: `Off-ramp payout for ${request.cryptoAmount} ${request.cryptoAsset}`,
+                  reference,
+                },
+                {
+                  headers: {
+                    Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+                    'Content-Type': 'application/json',
+                  },
+                },
+              ),
+            );
+
+            this.logger.log(`Paystack transfer response for offramp: ${JSON.stringify(transferResponse.data)}`);
+
+            if (!transferResponse.data.status) {
+              throw new BadRequestException(`Paystack transfer failed: ${transferResponse.data.message}`);
+            }
+          } catch (axiosError) {
+            const err = axiosError as any;
+            this.logger.error(`Paystack API error in offramp: ${err.message}`, err.response?.data);
+            
+            // Handle specific Paystack errors
+            const errorMessage = err.response?.data?.message || err.response?.data?.error || err.message;
+            
+            if (err.response?.status === 400) {
+              if (errorMessage.includes('balance') || errorMessage.includes('Insufficient')) {
+                throw new BadRequestException('Insufficient Paystack balance. Please contact support.');
+              } else if (errorMessage.includes('recipient') || errorMessage.includes('Recipient')) {
+                throw new BadRequestException('Invalid recipient. Please re-add your bank account.');
+              } else if (errorMessage.includes('reference') || errorMessage.includes('Reference')) {
+                throw new BadRequestException('Duplicate transaction reference. Please try again.');
+              }
+            }
+            
+            throw new BadRequestException(`Transfer failed: ${errorMessage}`);
           }
 
           this.logger.log(

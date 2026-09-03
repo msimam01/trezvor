@@ -35,6 +35,7 @@ export class SettingsService implements OnModuleInit {
         { chain: SupportedChain.SOLANA, minAmountNaira: 500, isEnabled: true },
         { chain: SupportedChain.BASE, minAmountNaira: 700, isEnabled: true },
         { chain: SupportedChain.TON, minAmountNaira: 500, isEnabled: true },
+        { chain: SupportedChain.BSC, minAmountNaira: 500, isEnabled: true },
       ];
 
       for (const config of defaultChainConfigs) {
@@ -116,7 +117,7 @@ export class SettingsService implements OnModuleInit {
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error getting enabled chains: ${err.message}`, err.stack);
-      return [SupportedChain.SOLANA, SupportedChain.BASE, SupportedChain.TON]; // Fallback
+      return [SupportedChain.SOLANA, SupportedChain.BASE, SupportedChain.TON, SupportedChain.BSC]; // Fallback
     }
   }
 

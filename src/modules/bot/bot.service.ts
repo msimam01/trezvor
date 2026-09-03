@@ -1,7 +1,6 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
-import { firstValueFrom } from 'rxjs';
 import { Bot, session, InlineKeyboard, Context, SessionFlavor } from 'grammy';
 import {
   BotCallbackAction,
@@ -19,14 +18,15 @@ import { SettingsService } from '../settings/settings.service';
 import { PaymentsService } from '../payments/payments.service';
 import { OracleService } from '../oracle/oracle.service';
 import { OfframpService } from '../offramp/offramp.service';
-import { validateWalletAddress, getValidationErrorMessage, ChainType } from './helpers/wallet-validator';
+import { WalletValidatorService } from '../wallet/wallet-validator.service';
 import { getExplorerUrl } from '../web3/helpers/explorer.helper';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
+import { ReferralService } from '../referrals/referral.service';
 
 interface BotSessionData {
   step: BotSessionStep;
-  selectedChain: 'SOLANA' | 'BASE' | 'TON' | null;
+  selectedChain: 'SOLANA' | 'BASE' | 'TON' | 'BSC' | null;
   selectedAmountNaira: number | null;
   userId: string | null; // Store the User UUID for order creation
   lastOrderId: string | null; // Store the last created order ID for payment
@@ -59,6 +59,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly httpService: HttpService,
     private readonly offrampService: OfframpService,
     private readonly walletService: WalletService,
+    private readonly walletValidator: WalletValidatorService,
+    private readonly referralService: ReferralService,
   ) {
     this.botToken = this.configService.get<string>('TELEGRAM_BOT_TOKEN') || '';
     if (!this.botToken) {
@@ -102,6 +104,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.command('ping', this.handlePingCommand.bind(this));
     this.bot.command('bank', this.handleBankCommand.bind(this));
     this.bot.command('wallet', this.handleWalletCommand.bind(this));
+    this.bot.command('withdraw', this.handleWithdrawCommand.bind(this));
 
     // Register callback query handlers
     this.bot.callbackQuery(BotCallbackAction.ACTION_BUY_GAS, this.handleBuyGas.bind(this));
@@ -120,6 +123,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.callbackQuery(BotCallbackChain.CHAIN_SOLANA, this.handleChainSelection.bind(this));
     this.bot.callbackQuery(BotCallbackChain.CHAIN_BASE, this.handleChainSelection.bind(this));
     this.bot.callbackQuery(BotCallbackChain.CHAIN_TON, this.handleChainSelection.bind(this));
+    this.bot.callbackQuery(BotCallbackChain.CHAIN_BSC, this.handleChainSelection.bind(this));
 
     // Amount selection handlers
     this.bot.callbackQuery(BotCallbackAmount.AMT_1000, this.handleAmountSelection.bind(this));
@@ -141,6 +145,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     
     // Bank selection handler for adding bank accounts
     this.bot.callbackQuery(/^BANK_CODE_/, this.handleBankCodeSelection.bind(this));
+
+    // Withdrawal confirmation handler
+    this.bot.callbackQuery(/^WITHDRAW_CONFIRM_/, this.handleWithdrawalConfirmation.bind(this));
 
     // Message handler for wallet address
     this.bot.on('message:text', this.handleTextMessage.bind(this));
@@ -266,6 +273,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         'SOLANA': BotCallbackChain.CHAIN_SOLANA,
         'BASE': BotCallbackChain.CHAIN_BASE,
         'TON': BotCallbackChain.CHAIN_TON,
+        'BSC': BotCallbackChain.CHAIN_BSC,
       };
       
       enabledChains.forEach((chain, index) => {
@@ -369,6 +377,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         SOLANA: 'SOL',
         BASE: 'ETH',
         TON: 'TON',
+        BSC: 'BNB',
       };
 
       let ordersText = `📦 <b>My Orders</b> (Last 5)\n\n`;
@@ -428,7 +437,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         '❓ <b>Help & Support</b>\n\n' +
         '🤖 <b>How to use this bot:</b>\n' +
         '1. Use /buy to start a crypto purchase\n' +
-        '2. Select your preferred blockchain (Solana, Base, or TON)\n' +
+        '2. Select your preferred blockchain (Solana, Base, TON, or BSC)\n' +
         '3. Choose the amount you want to purchase\n' +
         '4. Provide your wallet address\n' +
         '5. Complete payment via the payment gateway\n' +
@@ -439,6 +448,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         '3. Enter the amount and transaction ID\n' +
         '4. Choose payout destination (Wallet or Bank)\n' +
         '5. Receive NGN payout after verification\n\n' +
+        '🏦 <b>Bank Withdrawals:</b>\n' +
+        '• Use /withdraw to withdraw to your bank account\n' +
+        '• Minimum withdrawal: ₦500\n' +
+        '• Instant Paystack transfers\n' +
+        '• Must have saved bank account\n\n' +
         '🏦 <b>Bank Management:</b>\n' +
         '• Use /bank to add your bank account\n' +
         '• Supports instant Paystack account resolution\n' +
@@ -456,8 +470,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         '• Telegram: @GasBotAdmin\n' +
         '• WhatsApp: +234XXXXXXXXXX\n\n' +
         '⚡ <b>Quick Commands:</b>\n' +
-        '/buy - Buy Gas (SOL, TON, BASE)\n' +
+        '/buy - Buy Gas (SOL, TON, BASE, BSC)\n' +
         '/sell - Sell USDT (Bybit Off-Ramp)\n' +
+        '/withdraw - Withdraw to Bank Account\n' +
         '/wallet - View Naira Balance & Withdraw\n' +
         '/bank - Manage Saved Bank Accounts\n' +
         '/ref - Referral Stats & Link\n' +
@@ -507,10 +522,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const callbackData = ctx.callbackQuery.data;
       
       // Map callback to chain enum value
-      const chainMap: Record<string, 'SOLANA' | 'BASE' | 'TON'> = {
+      const chainMap: Record<string, 'SOLANA' | 'BASE' | 'TON' | 'BSC'> = {
         [BotCallbackChain.CHAIN_SOLANA]: 'SOLANA',
         [BotCallbackChain.CHAIN_BASE]: 'BASE',
         [BotCallbackChain.CHAIN_TON]: 'TON',
+        [BotCallbackChain.CHAIN_BSC]: 'BSC',
       };
 
       const selectedChain = chainMap[callbackData];
@@ -730,9 +746,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const walletAddress = text;
       const chain = ctx.session.selectedChain;
 
-      // Validate wallet address based on chain
-      if (!validateWalletAddress(chain as ChainType, walletAddress)) {
-        const errorMessage = getValidationErrorMessage(chain as ChainType);
+      // Validate wallet address using strict multi-chain validation
+      if (!this.walletValidator.validateWalletAddress(chain as any, walletAddress)) {
+        const errorMessage = this.walletValidator.getValidationErrorMessage(chain as any);
         const keyboard = new InlineKeyboard()
           .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
           .text('🏠 Home', BotCallbackAction.ACTION_HOME);
@@ -740,6 +756,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         await ctx.reply(`❌ Invalid ${chain} address. ${errorMessage}\n\nPlease check and re-enter, or click Back.`, { reply_markup: keyboard });
         return;
       }
+
+      // Normalize the wallet address
+      const normalizedAddress = this.walletValidator.normalizeAddress(chain as any, walletAddress);
 
       // Get the user's selected amount (this is the total they will pay)
       const fiatAmount = ctx.session.selectedAmountNaira;
@@ -774,7 +793,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const order = await this.ordersService.createOrder({
         userId: currentUserId,
         chain: chain as any,
-        targetWallet: walletAddress,
+        targetWallet: normalizedAddress,
         fiatAmountNaira: fiatAmount,
         feeNaira,
         totalAmount,
@@ -791,6 +810,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         SOLANA: 'SOL',
         BASE: 'ETH',
         TON: 'TON',
+        BSC: 'BNB',
       }[chain || 'SOLANA'] || 'tokens';
 
       // Send order summary with estimated crypto output
@@ -801,7 +821,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         `💰 <b>Payment:</b> ₦${fiatAmount.toLocaleString()}\n` +
         `⚡ <b>Estimated Output:</b> ~${cryptoAmount}${tokenSymbol}\n` +
         `📈 <b>Rate:</b> ₦${rateNgn.toLocaleString()}/${tokenSymbol}\n` +
-        `👛 <b>Wallet:</b> <code>${walletAddress.substring(0, 8)}...${walletAddress.substring(walletAddress.length - 4)}</code>\n` +
+        `👛 <b>Wallet:</b> <code>${normalizedAddress.substring(0, 8)}...${normalizedAddress.substring(normalizedAddress.length - 4)}</code>\n` +
         `📝 <b>Order ID:</b> <code>${order.id.substring(0, 8)}...</code>\n\n` +
         `Status: ⏳ Pending Payment`;
 
@@ -1093,6 +1113,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           .text('🏠 Home', BotCallbackAction.ACTION_HOME);
         
         await ctx.reply('❌ Invalid amount. Please enter a valid number (e.g. 1000).', { reply_markup: keyboard });
+        return;
+      }
+
+      // Validate minimum withdrawal amount
+      const MIN_WITHDRAWAL_AMOUNT = 500;
+      if (amount < MIN_WITHDRAWAL_AMOUNT) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+        
+        await ctx.reply(`❌ Minimum withdrawal amount is ₦${MIN_WITHDRAWAL_AMOUNT}. Please enter a higher amount.`, { reply_markup: keyboard });
         return;
       }
 
@@ -1444,12 +1475,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      // Get referral stats from backend
-      const response = await this.httpService.axiosRef.get(
-        `${this.configService.get<string>('APP_BASE_URL')}/api/v1/referrals/public/stats/${user.id}`
-      );
-
-      const stats = response.data.data;
+      // Get referral stats from service
+      const stats = await this.referralService.getPublicReferralStats(user.id);
 
       const botUsername = this.configService.get<string>('TELEGRAM_BOT_USERNAME') || 'GasBot';
       const referralLink = `https://t.me/${botUsername}?start=${user.referralCode}`;
@@ -1523,6 +1550,29 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in /wallet command: ${err.message}`, err.stack);
+      await ctx.reply('Sorry, something went wrong. Please try again.');
+    }
+  }
+
+  private async handleWithdrawCommand(ctx: BotContext) {
+    try {
+      if (!ctx.from) {
+        await ctx.reply('Unable to identify user. Please try again.');
+        return;
+      }
+
+      const telegramId = BigInt(ctx.from.id);
+      const user = await this.usersService.findOrCreateUser({
+        telegramId,
+        username: ctx.from.username,
+        firstName: ctx.from.first_name,
+      });
+
+      ctx.session.userId = user.id;
+      await this.handleWithdraw(ctx);
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in /withdraw command: ${err.message}`, err.stack);
       await ctx.reply('Sorry, something went wrong. Please try again.');
     }
   }
@@ -1678,8 +1728,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         .text('➕ Add Bank', BotCallbackAction.ACTION_BANK)
         .row();
 
-      if (savedBanks.length > 0) {
-        keyboard.text('💸 Withdraw', BotCallbackAction.ACTION_WITHDRAW);
+      if (savedBanks.length > 0 && walletData.nairaBalance >= 500) {
+        keyboard.text('💸 Withdraw to Bank', BotCallbackAction.ACTION_WITHDRAW);
         keyboard.row();
       }
 
@@ -1720,9 +1770,23 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      // Get user's saved banks
+      // Get user's wallet balance
       const walletData = await this.walletService.getWalletBalance(ctx.session.userId);
 
+      // Check minimum balance requirement (₦500)
+      const MIN_WITHDRAWAL_AMOUNT = 500;
+      if (walletData.nairaBalance < MIN_WITHDRAWAL_AMOUNT) {
+        const keyboard = new InlineKeyboard()
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+        await ctx.reply(
+          `❌ Minimum withdrawal amount is ₦${MIN_WITHDRAWAL_AMOUNT}. Your current balance is ₦${walletData.formattedBalance}.`,
+          { reply_markup: keyboard }
+        );
+        return;
+      }
+
+      // Get user's saved banks
       if (walletData.savedBanks.length === 0) {
         const keyboard = new InlineKeyboard()
           .text('➕ Add Bank', BotCallbackAction.ACTION_BANK)
@@ -1744,7 +1808,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
       const message = 
         `💸 <b>Withdraw Funds</b>\n\n` +
-        `💵 <b>Available Balance:</b> ₦${walletData.formattedBalance}\n\n` +
+        `💵 <b>Available Balance:</b> ₦${walletData.formattedBalance}\n` +
+        `💸 <b>Minimum Withdrawal:</b> ₦${MIN_WITHDRAWAL_AMOUNT}\n\n` +
         `Please enter the amount you want to withdraw (₦):`;
 
       if (ctx.callbackQuery) {
@@ -1802,6 +1867,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             'SOLANA': BotCallbackChain.CHAIN_SOLANA,
             'BASE': BotCallbackChain.CHAIN_BASE,
             'TON': BotCallbackChain.CHAIN_TON,
+            'BSC': BotCallbackChain.CHAIN_BSC,
           };
           
           enabledChains.forEach((chain, index) => {
@@ -2199,6 +2265,71 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
       const amount = ctx.session.withdrawalAmount;
 
+      // Get bank details for confirmation
+      const savedBank = await this.prisma.savedBank.findUnique({
+        where: { id: bankId },
+      });
+
+      if (!savedBank) {
+        await ctx.reply('Bank account not found. Please try again.');
+        return;
+      }
+
+      // Show confirmation preview
+      ctx.session.withdrawalBankId = bankId;
+      ctx.session.step = BotSessionStep.AWAITING_WITHDRAWAL_CONFIRMATION;
+
+      const message = 
+        `🏦 <b>Confirm Withdrawal</b>\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `💸 <b>Amount:</b> ₦${amount.toLocaleString()}\n` +
+        `🏦 <b>Bank:</b> ${savedBank.bankName}\n` +
+        `📋 <b>Account Number:</b> ${savedBank.accountNumber}\n` +
+        `👤 <b>Account Name:</b> ${savedBank.accountName}\n\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `Tap 'Confirm' to process instant Paystack transfer.`;
+
+      const keyboard = new InlineKeyboard()
+        .text('✅ Confirm', `WITHDRAW_CONFIRM_${bankId}`)
+        .row()
+        .text('❌ Cancel', BotCallbackAction.ACTION_BACK);
+
+      await ctx.reply(message, { 
+        parse_mode: 'HTML',
+        reply_markup: keyboard 
+      });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error preparing withdrawal confirmation: ${err.message}`, err.stack);
+      
+      const keyboard = new InlineKeyboard()
+        .text('💰 My Wallet', BotCallbackAction.ACTION_WALLET)
+        .row()
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+      
+      await ctx.reply(`❌ Error preparing withdrawal: ${err.message}. Please try again.`, { reply_markup: keyboard });
+    }
+  }
+
+  private async handleWithdrawalConfirmation(ctx: BotContext) {
+    try {
+      if (!ctx.callbackQuery?.data) {
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid callback data' });
+        }
+        return;
+      }
+
+      const callbackData = ctx.callbackQuery.data;
+      const bankId = callbackData.replace('WITHDRAW_CONFIRM_', '');
+
+      if (!ctx.session.userId || !ctx.session.withdrawalAmount) {
+        await ctx.reply('Session expired. Please start over with /wallet');
+        return;
+      }
+
+      const amount = ctx.session.withdrawalAmount;
+
       // Process withdrawal via wallet service
       const result = await this.walletService.withdraw(
         ctx.session.userId,
@@ -2218,7 +2349,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         `📝 <b>Reference:</b> ${result.reference}\n` +
         `🆔 <b>Transaction ID:</b> ${result.transactionId}\n\n` +
         `━━━━━━━━━━━━━━━━━━\n` +
-        `Your withdrawal has been initiated and will be processed within 24-48 hours.`;
+        `Your withdrawal has been processed via Paystack and will be credited to your bank account within minutes.`;
 
       const keyboard = new InlineKeyboard()
         .text('💰 My Wallet', BotCallbackAction.ACTION_WALLET)
@@ -2229,9 +2360,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         parse_mode: 'HTML',
         reply_markup: keyboard 
       });
+      
+      if (ctx.callbackQuery) {
+        await ctx.answerCallbackQuery({ text: 'Withdrawal processed successfully' });
+      }
     } catch (error) {
       const err = error as Error;
-      this.logger.error(`Error processing withdrawal: ${err.message}`, err.stack);
+      this.logger.error(`Error processing withdrawal confirmation: ${err.message}`, err.stack);
       
       const keyboard = new InlineKeyboard()
         .text('💰 My Wallet', BotCallbackAction.ACTION_WALLET)
@@ -2239,6 +2374,14 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         .text('🏠 Home', BotCallbackAction.ACTION_HOME);
       
       await ctx.reply(`❌ Withdrawal failed: ${err.message}. Please try again.`, { reply_markup: keyboard });
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Withdrawal failed' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      }
     }
   }
 
@@ -2376,23 +2519,19 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      // Call the offramp service via HTTP
-      const apiBaseUrl = this.configService.get<string>('API_BASE_URL') || 'http://localhost:5000';
-      const response = await firstValueFrom(
-        this.httpService.post(
-          `${apiBaseUrl}/api/v1/offramp/bot-submit`,
-          {
-            userId: ctx.session.userId,
-            cryptoAsset,
-            cryptoAmount,
-            userBybitTxId,
-            payoutDestination,
-            savedBankId,
-          }
-        )
+      // Call the offramp service directly
+      const response = await this.offrampService.createOfframpRequest(
+        ctx.session.userId,
+        {
+          cryptoAsset: cryptoAsset as any,
+          cryptoAmount,
+          userBybitTxId,
+          payoutDestination: payoutDestination as any,
+          savedBankId,
+        }
       );
 
-      const offrampRequest = response.data;
+      const offrampRequest = response;
 
       // Determine payout destination details
       let destinationDetails = '';
@@ -2452,9 +2591,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       // Register bot commands with Telegram (with error handling)
       try {
         await this.bot.api.setMyCommands([
-          { command: 'buy', description: 'Buy Gas (SOL, TON, BASE)' },
+          { command: 'buy', description: 'Buy Gas (SOL, TON, BASE, BSC)' },
           { command: 'sell', description: 'Sell USDT (Bybit Off-Ramp)' },
           { command: 'wallet', description: 'View Naira Balance & Withdraw' },
+          { command: 'withdraw', description: 'Withdraw to Bank Account' },
           { command: 'bank', description: 'Manage Saved Bank Accounts' },
           { command: 'ref', description: 'Referral Stats & Link' },
           { command: 'link', description: 'Link Account to Web Dashboard' },

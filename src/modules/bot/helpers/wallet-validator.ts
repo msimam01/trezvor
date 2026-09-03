@@ -1,6 +1,6 @@
 import { PublicKey } from '@solana/web3.js';
 
-export type ChainType = 'SOLANA' | 'BASE' | 'TON';
+export type ChainType = 'SOLANA' | 'BASE' | 'TON' | 'BSC';
 
 export function validateWalletAddress(chain: ChainType, address: string): boolean {
   if (!address || typeof address !== 'string') {
@@ -14,6 +14,7 @@ export function validateWalletAddress(chain: ChainType, address: string): boolea
       return validateSolanaAddress(trimmedAddress);
     
     case 'BASE':
+    case 'BSC':
       return validateBaseAddress(trimmedAddress);
     
     case 'TON':
@@ -53,7 +54,8 @@ export function getValidationErrorMessage(chain: ChainType): string {
     case 'SOLANA':
       return 'Solana addresses must be valid Base58 addresses on the Ed25519 curve.';
     case 'BASE':
-      return 'Base addresses must start with 0x followed by 40 hexadecimal characters.';
+    case 'BSC':
+      return 'EVM addresses must start with 0x followed by 40 hexadecimal characters.';
     case 'TON':
       return 'TON addresses must be valid user-friendly addresses (EQ/UQ/0: prefix) or 48-character addresses.';
     default:

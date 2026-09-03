@@ -13,6 +13,8 @@ export function getExplorerUrl(chain: SupportedChain, txHash: string): string {
         return `https://testnet.tonviewer.com/account/${txHash}`;
       }
       return `https://testnet.tonviewer.com/transaction/${txHash}`;
+    case 'BSC':
+      return `https://testnet.bscscan.com/tx/${txHash}`;
     default:
       return '#';
   }

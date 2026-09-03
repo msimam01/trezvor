@@ -140,6 +140,41 @@ export class Web3Service {
   }
 
   /**
+   * BSC EVM Transfer Engine
+   * Transfers BNB from vault to target wallet on BSC testnet
+   */
+  private async transferBsc(targetWallet: string, amount: number): Promise<string> {
+    try {
+      const rpcUrl = this.configService.get<string>('BSC_RPC_URL');
+      if (!rpcUrl) {
+        throw new Error('BSC_RPC_URL not configured in environment variables');
+      }
+
+      const privateKey = this.configService.get<string>('BSC_VAULT_PRIVATE_KEY');
+      if (!privateKey) {
+        throw new Error('BSC_VAULT_PRIVATE_KEY not configured in environment variables');
+      }
+
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const wallet = new ethers.Wallet(privateKey, provider);
+
+      const tx = await wallet.sendTransaction({
+        to: targetWallet,
+        value: ethers.parseEther(amount.toString()),
+      });
+
+      await tx.wait(1); // Wait for 1 confirmation
+
+      this.logger.log(`BSC transfer successful: ${tx.hash}`);
+      return tx.hash;
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`BSC transfer failed: ${err.message}`, err.stack);
+      throw new Error(`BSC transfer failed: ${err.message}`);
+    }
+  }
+
+  /**
    * TON Transfer Engine
    * Transfers TON from vault to target wallet on TON testnet
    */
@@ -306,6 +341,32 @@ export class Web3Service {
   }
 
   /**
+   * Check vault balance for BSC (BNB)
+   */
+  private async getBscBalance(): Promise<number> {
+    try {
+      const rpcUrl = this.configService.get<string>('BSC_RPC_URL');
+      if (!rpcUrl) {
+        throw new Error('BSC_RPC_URL not configured');
+      }
+
+      const privateKey = this.configService.get<string>('BSC_VAULT_PRIVATE_KEY');
+      if (!privateKey) {
+        throw new Error('BSC_VAULT_PRIVATE_KEY not configured');
+      }
+
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const wallet = new ethers.Wallet(privateKey, provider);
+      const balance = await provider.getBalance(wallet.address);
+      return parseFloat(ethers.formatEther(balance));
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Failed to get BSC balance: ${err.message}`);
+      return 0;
+    }
+  }
+
+  /**
    * Get vault balance for a specific chain
    */
   async getVaultBalance(chain: SupportedChain): Promise<number> {
@@ -316,6 +377,8 @@ export class Web3Service {
         return await this.getBaseBalance();
       case 'TON':
         return await this.getTonBalance();
+      case 'BSC':
+        return await this.getBscBalance();
       default:
         throw new Error(`Unsupported chain: ${chain}`);
     }
@@ -342,6 +405,7 @@ export class Web3Service {
         SOLANA: 'SOL',
         BASE: 'ETH',
         TON: 'TON',
+        BSC: 'BNB',
       }[chain] || 'tokens';
 
       this.logger.warn(
@@ -369,6 +433,9 @@ export class Web3Service {
         break;
       case 'TON':
         txHash = await this.transferTon(targetWallet, cryptoAmount);
+        break;
+      case 'BSC':
+        txHash = await this.transferBsc(targetWallet, cryptoAmount);
         break;
       default:
         throw new Error(`Unsupported chain: ${chain}`);
