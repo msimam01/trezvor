@@ -6,6 +6,7 @@ import {
   BotCallbackAction,
   BotCallbackChain,
   BotCallbackAmount,
+  BotCallbackQuantity,
   BotCallbackCryptoAsset,
   BotCallbackPayoutDestination,
   BotSessionStep,
@@ -26,8 +27,10 @@ import { ReferralService } from '../referrals/referral.service';
 
 interface BotSessionData {
   step: BotSessionStep;
-  selectedChain: 'SOLANA' | 'BASE' | 'TON' | 'BSC' | null;
+  selectedChain: 'SOLANA' | 'BASE' | 'TON' | 'BSC' | 'USDT_TON' | 'USDT_SOL' | 'USDT_BSC' | 'USDT_BASE' | null;
   selectedAmountNaira: number | null;
+  selectedTokenQuantity: number | null;
+  targetWalletAddress: string | null; // Store the target wallet address
   userId: string | null; // Store the User UUID for order creation
   lastOrderId: string | null; // Store the last created order ID for payment
   sellCryptoAsset: 'USDT' | 'TON' | 'SOL' | null;
@@ -78,6 +81,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         step: BotSessionStep.IDLE,
         selectedChain: null,
         selectedAmountNaira: null,
+        selectedTokenQuantity: null,
+        targetWalletAddress: null,
         userId: null,
         lastOrderId: null,
         sellCryptoAsset: null,
@@ -124,12 +129,35 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     this.bot.callbackQuery(BotCallbackChain.CHAIN_BASE, this.handleChainSelection.bind(this));
     this.bot.callbackQuery(BotCallbackChain.CHAIN_TON, this.handleChainSelection.bind(this));
     this.bot.callbackQuery(BotCallbackChain.CHAIN_BSC, this.handleChainSelection.bind(this));
+    this.bot.callbackQuery(BotCallbackChain.CHAIN_USDT, this.handleUSDTNetworkSelection.bind(this));
+    this.bot.callbackQuery(BotCallbackChain.CHAIN_USDT_TON, this.handleChainSelection.bind(this));
+    this.bot.callbackQuery(BotCallbackChain.CHAIN_USDT_SOL, this.handleChainSelection.bind(this));
+    this.bot.callbackQuery(BotCallbackChain.CHAIN_USDT_BSC, this.handleChainSelection.bind(this));
+    this.bot.callbackQuery(BotCallbackChain.CHAIN_USDT_BASE, this.handleChainSelection.bind(this));
 
-    // Amount selection handlers
-    this.bot.callbackQuery(BotCallbackAmount.AMT_1000, this.handleAmountSelection.bind(this));
-    this.bot.callbackQuery(BotCallbackAmount.AMT_2500, this.handleAmountSelection.bind(this));
-    this.bot.callbackQuery(BotCallbackAmount.AMT_5000, this.handleAmountSelection.bind(this));
+    // Amount selection handlers (deprecated - using token quantity approach)
+    // this.bot.callbackQuery(BotCallbackAmount.AMT_1000, this.handleAmountSelection.bind(this));
+    // this.bot.callbackQuery(BotCallbackAmount.AMT_2500, this.handleAmountSelection.bind(this));
+    // this.bot.callbackQuery(BotCallbackAmount.AMT_5000, this.handleAmountSelection.bind(this));
     this.bot.callbackQuery(BotCallbackAmount.AMT_CUSTOM, this.handleCustomAmount.bind(this));
+
+    // Token quantity selection handlers
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_SOL_005, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_SOL_01, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_SOL_05, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_SOL_1, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_TON_1, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_TON_5, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_TON_10, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_TON_20, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_ETH_001, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_ETH_005, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_ETH_01, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_USDT_5, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_USDT_10, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_USDT_25, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_USDT_50, this.handleTokenQuantitySelection.bind(this));
+    this.bot.callbackQuery(BotCallbackQuantity.QTY_CUSTOM, this.handleCustomTokenQuantity.bind(this));
 
     // Crypto asset selection handlers for off-ramp (USDT only now)
     // this.bot.callbackQuery(BotCallbackCryptoAsset.CRYPTO_USDT, this.handleCryptoAssetSelection.bind(this));
@@ -285,6 +313,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           }
         }
       });
+
+      // Add USDT option
+      keyboard.text('USDT', BotCallbackChain.CHAIN_USDT);
+      keyboard.row();
       
       keyboard.text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
@@ -378,6 +410,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         BASE: 'ETH',
         TON: 'TON',
         BSC: 'BNB',
+        USDT_TON: 'USDT',
+        USDT_SOL: 'USDT',
+        USDT_BSC: 'USDT',
+        USDT_BASE: 'USDT',
       };
 
       let ordersText = `📦 <b>My Orders</b> (Last 5)\n\n`;
@@ -522,11 +558,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const callbackData = ctx.callbackQuery.data;
       
       // Map callback to chain enum value
-      const chainMap: Record<string, 'SOLANA' | 'BASE' | 'TON' | 'BSC'> = {
+      const chainMap: Record<string, 'SOLANA' | 'BASE' | 'TON' | 'BSC' | 'USDT_TON' | 'USDT_SOL' | 'USDT_BSC' | 'USDT_BASE'> = {
         [BotCallbackChain.CHAIN_SOLANA]: 'SOLANA',
         [BotCallbackChain.CHAIN_BASE]: 'BASE',
         [BotCallbackChain.CHAIN_TON]: 'TON',
         [BotCallbackChain.CHAIN_BSC]: 'BSC',
+        [BotCallbackChain.CHAIN_USDT_TON]: 'USDT_TON',
+        [BotCallbackChain.CHAIN_USDT_SOL]: 'USDT_SOL',
+        [BotCallbackChain.CHAIN_USDT_BSC]: 'USDT_BSC',
+        [BotCallbackChain.CHAIN_USDT_BASE]: 'USDT_BASE',
       };
 
       const selectedChain = chainMap[callbackData];
@@ -538,19 +578,12 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       }
 
       ctx.session.selectedChain = selectedChain;
-      ctx.session.step = BotSessionStep.SELECT_AMOUNT;
+      ctx.session.step = BotSessionStep.SELECT_TOKEN_QUANTITY;
 
-      const keyboard = new InlineKeyboard()
-        .text('₦1,000', BotCallbackAmount.AMT_1000)
-        .text('₦2,500', BotCallbackAmount.AMT_2500)
-        .text('₦5,000', BotCallbackAmount.AMT_5000)
-        .row()
-        .text('✍️ Custom Amount', BotCallbackAmount.AMT_CUSTOM)
-        .row()
-        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
-        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
-
-      const message = `Select amount for ${CHAIN_DISPLAY_NAMES[callbackData as BotCallbackChain]}:`;
+      // Show token quantity selection based on chain
+      const keyboard = this.buildTokenQuantityKeyboard(selectedChain);
+      const tokenName = this.getTokenName(selectedChain);
+      const message = `Enter the quantity of ${tokenName} you want to receive:`;
       
       if (ctx.callbackQuery) {
         await ctx.editMessageText(message, { reply_markup: keyboard });
@@ -574,48 +607,22 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async handleAmountSelection(ctx: BotContext) {
+  private async handleUSDTNetworkSelection(ctx: BotContext) {
     try {
-      if (!ctx.callbackQuery?.data) {
-        if (ctx.callbackQuery) {
-          await ctx.answerCallbackQuery({ text: 'Invalid callback data' });
-        }
-        return;
-      }
+      ctx.session.step = BotSessionStep.SELECT_CHAIN;
+      ctx.session.selectedChain = null;
 
-      const callbackData = ctx.callbackQuery.data;
-      const amount = AMOUNT_NAIRA_MAP[callbackData as BotCallbackAmount];
-
-      if (!amount) {
-        if (ctx.callbackQuery) {
-          await ctx.answerCallbackQuery({ text: 'Invalid amount selection' });
-        }
-        return;
-      }
-
-      // Validate against minimum amount for selected chain
-      const chain = ctx.session.selectedChain;
-      if (chain) {
-        const chainConfig = await this.settingsService.getChainConfig(chain as any);
-        if (amount < chainConfig.minAmountNaira) {
-          if (ctx.callbackQuery) {
-            await ctx.answerCallbackQuery({ 
-              text: `Minimum order for ${chain} is ₦${chainConfig.minAmountNaira}` 
-            });
-          }
-          return;
-        }
-      }
-
-      ctx.session.selectedAmountNaira = amount;
-      ctx.session.step = BotSessionStep.AWAITING_WALLET;
-
-      const chainName = ctx.session.selectedChain;
       const keyboard = new InlineKeyboard()
+        .text('USDT (TON)', BotCallbackChain.CHAIN_USDT_TON)
+        .text('USDT (SOL)', BotCallbackChain.CHAIN_USDT_SOL)
+        .row()
+        .text('USDT (BSC)', BotCallbackChain.CHAIN_USDT_BSC)
+        .text('USDT (BASE)', BotCallbackChain.CHAIN_USDT_BASE)
+        .row()
         .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
         .text('🏠 Home', BotCallbackAction.ACTION_HOME);
 
-      const message = `Please reply with your target wallet address for ${chainName}:`;
+      const message = 'Select USDT network:';
       
       if (ctx.callbackQuery) {
         await ctx.editMessageText(message, { reply_markup: keyboard });
@@ -625,7 +632,187 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       }
     } catch (error) {
       const err = error as Error;
-      this.logger.error(`Error in amount selection handler: ${err.message}`, err.stack);
+      this.logger.error(`Error in USDT network selection handler: ${err.message}`, err.stack);
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
+    }
+  }
+
+  private buildTokenQuantityKeyboard(chain: string): InlineKeyboard {
+    const keyboard = new InlineKeyboard();
+    
+    switch (chain) {
+      case 'SOLANA':
+        keyboard
+          .text('0.05 SOL', BotCallbackQuantity.QTY_SOL_005)
+          .text('0.1 SOL', BotCallbackQuantity.QTY_SOL_01)
+          .text('0.5 SOL', BotCallbackQuantity.QTY_SOL_05)
+          .row()
+          .text('1 SOL', BotCallbackQuantity.QTY_SOL_1)
+          .text('Custom', BotCallbackQuantity.QTY_CUSTOM);
+        break;
+      case 'TON':
+        keyboard
+          .text('1 TON', BotCallbackQuantity.QTY_TON_1)
+          .text('5 TON', BotCallbackQuantity.QTY_TON_5)
+          .text('10 TON', BotCallbackQuantity.QTY_TON_10)
+          .row()
+          .text('20 TON', BotCallbackQuantity.QTY_TON_20)
+          .text('Custom', BotCallbackQuantity.QTY_CUSTOM);
+        break;
+      case 'BASE':
+      case 'BSC':
+        keyboard
+          .text('0.01', BotCallbackQuantity.QTY_ETH_001)
+          .text('0.05', BotCallbackQuantity.QTY_ETH_005)
+          .text('0.1', BotCallbackQuantity.QTY_ETH_01)
+          .row()
+          .text('Custom', BotCallbackQuantity.QTY_CUSTOM);
+        break;
+      case 'USDT_TON':
+      case 'USDT_SOL':
+      case 'USDT_BSC':
+      case 'USDT_BASE':
+        keyboard
+          .text('5 USDT', BotCallbackQuantity.QTY_USDT_5)
+          .text('10 USDT', BotCallbackQuantity.QTY_USDT_10)
+          .text('25 USDT', BotCallbackQuantity.QTY_USDT_25)
+          .row()
+          .text('50 USDT', BotCallbackQuantity.QTY_USDT_50)
+          .text('Custom', BotCallbackQuantity.QTY_CUSTOM);
+        break;
+      default:
+        keyboard.text('Custom', BotCallbackQuantity.QTY_CUSTOM);
+    }
+    
+    keyboard.row()
+      .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+      .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+    
+    return keyboard;
+  }
+
+  private getTokenName(chain: string): string {
+    const tokenMap: Record<string, string> = {
+      'SOLANA': 'SOL',
+      'BASE': 'ETH',
+      'TON': 'TON',
+      'BSC': 'BNB',
+      'USDT_TON': 'USDT',
+      'USDT_SOL': 'USDT',
+      'USDT_BSC': 'USDT',
+      'USDT_BASE': 'USDT',
+    };
+    return tokenMap[chain] || 'tokens';
+  }
+
+  private async handleTokenQuantitySelection(ctx: BotContext) {
+    try {
+      if (!ctx.callbackQuery?.data) {
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid callback data' });
+        }
+        return;
+      }
+
+      const callbackData = ctx.callbackQuery.data;
+      
+      // Map callback to quantity
+      const quantityMap: Record<string, number> = {
+        [BotCallbackQuantity.QTY_SOL_005]: 0.05,
+        [BotCallbackQuantity.QTY_SOL_01]: 0.1,
+        [BotCallbackQuantity.QTY_SOL_05]: 0.5,
+        [BotCallbackQuantity.QTY_SOL_1]: 1.0,
+        [BotCallbackQuantity.QTY_TON_1]: 1.0,
+        [BotCallbackQuantity.QTY_TON_5]: 5.0,
+        [BotCallbackQuantity.QTY_TON_10]: 10.0,
+        [BotCallbackQuantity.QTY_TON_20]: 20.0,
+        [BotCallbackQuantity.QTY_ETH_001]: 0.01,
+        [BotCallbackQuantity.QTY_ETH_005]: 0.05,
+        [BotCallbackQuantity.QTY_ETH_01]: 0.1,
+        [BotCallbackQuantity.QTY_USDT_5]: 5.0,
+        [BotCallbackQuantity.QTY_USDT_10]: 10.0,
+        [BotCallbackQuantity.QTY_USDT_25]: 25.0,
+        [BotCallbackQuantity.QTY_USDT_50]: 50.0,
+      };
+
+      const quantity = quantityMap[callbackData];
+      if (!quantity) {
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Invalid quantity selection' });
+        }
+        return;
+      }
+
+      ctx.session.selectedTokenQuantity = quantity;
+      ctx.session.step = BotSessionStep.AWAITING_WALLET;
+
+      const chain = ctx.session.selectedChain;
+      const tokenName = this.getTokenName(chain || '');
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      const message = `Please reply with your target wallet address for ${quantity} ${tokenName}:`;
+      
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { reply_markup: keyboard });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { reply_markup: keyboard });
+      }
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in token quantity selection handler: ${err.message}`, err.stack);
+      
+      if (ctx.callbackQuery) {
+        try {
+          await ctx.answerCallbackQuery({ text: 'Error processing request' });
+        } catch (answerError) {
+          // Ignore answer callback errors
+        }
+      } else {
+        await ctx.reply('Error processing request. Please try again.');
+      }
+    }
+  }
+
+  private async handleCustomTokenQuantity(ctx: BotContext) {
+    try {
+      const chain = ctx.session.selectedChain;
+      if (!chain) {
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({ text: 'Please select a chain first' });
+        }
+        return;
+      }
+
+      const tokenName = this.getTokenName(chain);
+      ctx.session.step = BotSessionStep.AWAITING_CUSTOM_QUANTITY;
+
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      const message = `Enter custom quantity of ${tokenName} you want to receive:`;
+      
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(message, { reply_markup: keyboard });
+        await ctx.answerCallbackQuery();
+      } else {
+        await ctx.reply(message, { reply_markup: keyboard });
+      }
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in custom token quantity handler: ${err.message}`, err.stack);
       
       if (ctx.callbackQuery) {
         try {
@@ -640,46 +827,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleCustomAmount(ctx: BotContext) {
-    try {
-      const chain = ctx.session.selectedChain;
-      if (!chain) {
-        if (ctx.callbackQuery) {
-          await ctx.answerCallbackQuery({ text: 'Please select a chain first' });
-        }
-        return;
-      }
-
-      // Get chain config for minimum amount
-      const chainConfig = await this.settingsService.getChainConfig(chain as any);
-      
-      ctx.session.step = BotSessionStep.AWAITING_CUSTOM_AMOUNT;
-
-      const keyboard = new InlineKeyboard()
-        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
-        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
-
-      const message = `Enter custom Naira amount (Minimum for ${chain} is ₦${chainConfig.minAmountNaira}):`;
-      
-      if (ctx.callbackQuery) {
-        await ctx.editMessageText(message, { reply_markup: keyboard });
-        await ctx.answerCallbackQuery();
-      } else {
-        await ctx.reply(message, { reply_markup: keyboard });
-      }
-    } catch (error) {
-      const err = error as Error;
-      this.logger.error(`Error in custom amount handler: ${err.message}`, err.stack);
-      
-      if (ctx.callbackQuery) {
-        try {
-          await ctx.answerCallbackQuery({ text: 'Error processing request' });
-        } catch (answerError) {
-          // Ignore answer callback errors
-        }
-      } else {
-        await ctx.reply('Error processing request. Please try again.');
-      }
-    }
+    // This method is deprecated in the token-quantity-first approach
+    // Redirect to token quantity selection
+    await this.handleChainSelection(ctx);
   }
 
   private async handleTextMessage(ctx: BotContext) {
@@ -696,6 +846,12 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       // Handle custom amount input
       if (ctx.session.step === BotSessionStep.AWAITING_CUSTOM_AMOUNT) {
         await this.handleCustomAmountInput(ctx, text);
+        return;
+      }
+
+      // Handle custom token quantity input
+      if (ctx.session.step === BotSessionStep.AWAITING_CUSTOM_QUANTITY) {
+        await this.handleCustomQuantityInput(ctx, text);
         return;
       }
 
@@ -760,70 +916,46 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       // Normalize the wallet address
       const normalizedAddress = this.walletValidator.normalizeAddress(chain as any, walletAddress);
 
-      // Get the user's selected amount (this is the total they will pay)
-      const fiatAmount = ctx.session.selectedAmountNaira;
-      if (!fiatAmount) {
-        await ctx.reply('Invalid amount. Please start over with /start');
+      // Get the user's selected token quantity
+      const tokenQuantity = ctx.session.selectedTokenQuantity;
+      if (!tokenQuantity) {
+        await ctx.reply('Invalid quantity. Please start over with /start');
         return;
       }
 
-      // Fee is calculated internally (5% capped at ₦200) and deducted from crypto calculation
-      // User pays exactly fiatAmount total
-      const feeNaira = Math.min(fiatAmount * 0.05, 200);
-      const totalAmount = fiatAmount; // User pays exactly what they selected
+      // Store the wallet address in session
+      ctx.session.targetWalletAddress = normalizedAddress;
 
-      // Reset session but keep userId for potential future use
-      const currentUserId = ctx.session.userId;
-      ctx.session.step = BotSessionStep.IDLE;
-      ctx.session.selectedChain = null;
-      ctx.session.selectedAmountNaira = null;
-
-      // Create order using the stored userId (UUID)
-      if (!currentUserId) {
-        await ctx.reply('Unable to identify user. Please start over with /start');
-        return;
-      }
-
-      // Calculate crypto amount using Oracle service
-      const { cryptoAmount, rateNgn } = await this.oracleService.calculateCryptoAmount(
-        fiatAmount,
+      // Calculate costs using new token-quantity-first approach
+      const { costNgn: tokenCostNgn, rateNgn: tokenNgnRate, rateUsd: tokenUsdRate } = await this.oracleService.calculateNgnCost(
+        tokenQuantity,
         chain as any
       );
 
-      const order = await this.ordersService.createOrder({
-        userId: currentUserId,
-        chain: chain as any,
-        targetWallet: normalizedAddress,
-        fiatAmountNaira: fiatAmount,
-        feeNaira,
-        totalAmount,
-        cryptoAmount,
-        paymentGateway: 'PAYSTACK' as any, // Default gateway
-        status: 'PENDING_PAYMENT' as any,
-      });
+      // Calculate fees
+      const networkGasFeeUsd = 0.05; // $0.05 network gas fee
+      const platformFeeUsd = 0.05; // $0.05 platform fee
+      const combinedFeeUsd = networkGasFeeUsd + platformFeeUsd; // $0.10 total fee
+      
+      const usdNgnRate = await this.oracleService.getUsdtNgnRate();
+      const combinedFeeNgn = combinedFeeUsd * usdNgnRate;
+      const totalNgnToPay = tokenCostNgn + combinedFeeNgn;
 
-      // Store order ID in session for payment processing
-      ctx.session.lastOrderId = order.id;
+      // Store calculated values for order creation
+      ctx.session.selectedAmountNaira = totalNgnToPay;
 
-      // Determine token symbol
-      const tokenSymbol = {
-        SOLANA: 'SOL',
-        BASE: 'ETH',
-        TON: 'TON',
-        BSC: 'BNB',
-      }[chain || 'SOLANA'] || 'tokens';
+      // Determine token symbol and chain name
+      const tokenSymbol = this.getTokenName(chain || '');
+      const chainName = chain || 'Unknown';
 
-      // Send order summary with estimated crypto output
+      // Format order summary with USD fee presentation
       const summary =
-        `💳 <b>Order Summary</b>\n\n` +
-        `━━━━━━━━━━━━━━━━━━\n` +
-        `🔗 <b>Chain:</b> ${chain}\n` +
-        `💰 <b>Payment:</b> ₦${fiatAmount.toLocaleString()}\n` +
-        `⚡ <b>Estimated Output:</b> ~${cryptoAmount}${tokenSymbol}\n` +
-        `📈 <b>Rate:</b> ₦${rateNgn.toLocaleString()}/${tokenSymbol}\n` +
-        `👛 <b>Wallet:</b> <code>${normalizedAddress.substring(0, 8)}...${normalizedAddress.substring(normalizedAddress.length - 4)}</code>\n` +
-        `📝 <b>Order ID:</b> <code>${order.id.substring(0, 8)}...</code>\n\n` +
-        `Status: ⏳ Pending Payment`;
+        `⛓️ <b>Chain:</b> ${chainName}\n` +
+        `⚡️ <b>Quantity:</b> ${tokenQuantity} ${tokenSymbol}\n` +
+        `💰 <b>Total to Pay:</b> ₦${totalNgnToPay.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}\n` +
+        `🛡 <b>Fee (Network + Service):</b> $${combinedFeeUsd.toFixed(2)} (~₦${combinedFeeNgn.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})\n` +
+        `📈 <b>Exchange Rate:</b> ₦${tokenNgnRate.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / ${tokenSymbol}\n` +
+        `👛 <b>Destination Wallet:</b> <code>${normalizedAddress.substring(0, 8)}...${normalizedAddress.substring(normalizedAddress.length - 4)}</code>`;
 
       const keyboard = new InlineKeyboard()
         .text('💳 Pay Now', BotCallbackAction.ACTION_PAY_NOW)
@@ -947,6 +1079,45 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error in sell Tx ID input handler: ${err.message}`, err.stack);
+      await ctx.reply('Sorry, something went wrong. Please try again.');
+    }
+  }
+
+  private async handleCustomQuantityInput(ctx: BotContext, text: string) {
+    try {
+      const chain = ctx.session.selectedChain;
+      if (!chain) {
+        await ctx.reply('Please select a chain first.');
+        return;
+      }
+
+      // Parse numeric value
+      const quantity = parseFloat(text);
+      
+      // Validate numeric input
+      if (isNaN(quantity) || quantity <= 0) {
+        const keyboard = new InlineKeyboard()
+          .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+          .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+        
+        const tokenName = this.getTokenName(chain);
+        await ctx.reply(`❌ Invalid quantity. Please enter a valid number (e.g. 0.5).`, { reply_markup: keyboard });
+        return;
+      }
+
+      // Store valid quantity and proceed to wallet input
+      ctx.session.selectedTokenQuantity = quantity;
+      ctx.session.step = BotSessionStep.AWAITING_WALLET;
+
+      const keyboard = new InlineKeyboard()
+        .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
+        .text('🏠 Home', BotCallbackAction.ACTION_HOME);
+
+      const tokenName = this.getTokenName(chain);
+      await ctx.reply(`Please reply with your target wallet address for ${quantity} ${tokenName}:`, { reply_markup: keyboard });
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error in custom quantity input handler: ${err.message}`, err.stack);
       await ctx.reply('Sorry, something went wrong. Please try again.');
     }
   }
@@ -1852,9 +2023,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           break;
         
         case BotSessionStep.SELECT_AMOUNT:
+        case BotSessionStep.SELECT_TOKEN_QUANTITY:
           // Go back to Chain Selection
           ctx.session.step = BotSessionStep.SELECT_CHAIN;
           ctx.session.selectedAmountNaira = null;
+          ctx.session.selectedTokenQuantity = null;
           ctx.session.userId = currentUserId; // Preserve userId
 
           // Get enabled chains dynamically
@@ -1879,7 +2052,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
               }
             }
           });
-          
+
+          // Add USDT option
+          chainKeyboard.text('USDT', BotCallbackChain.CHAIN_USDT);
+          chainKeyboard.row();
           chainKeyboard.text('🏠 Home', BotCallbackAction.ACTION_HOME);
           
           const chainMessage = 'Select the blockchain network:';
@@ -1892,54 +2068,39 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           break;
         
         case BotSessionStep.AWAITING_CUSTOM_AMOUNT:
-          // Go back to Amount Selection
-          ctx.session.step = BotSessionStep.SELECT_AMOUNT;
+        case BotSessionStep.AWAITING_CUSTOM_QUANTITY:
+          // Go back to Token Quantity Selection
+          ctx.session.step = BotSessionStep.SELECT_TOKEN_QUANTITY;
           ctx.session.userId = currentUserId; // Preserve userId
 
-          const customAmountKeyboard = new InlineKeyboard()
-            .text('₦1,000', BotCallbackAmount.AMT_1000)
-            .text('₦2,500', BotCallbackAmount.AMT_2500)
-            .text('₦5,000', BotCallbackAmount.AMT_5000)
-            .row()
-            .text('✍️ Custom Amount', BotCallbackAmount.AMT_CUSTOM)
-            .row()
-            .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
-            .text('🏠 Home', BotCallbackAction.ACTION_HOME);
-          
-          const customChainName = ctx.session.selectedChain;
-          const customAmountMessage = `Select amount for ${customChainName}:`;
+          const customChain = ctx.session.selectedChain;
+          const customQuantityKeyboard = this.buildTokenQuantityKeyboard(customChain || '');
+          const customTokenName = this.getTokenName(customChain || '');
+          const customQuantityMessage = `Enter the quantity of ${customTokenName} you want to receive:`;
           
           if (ctx.callbackQuery) {
-            await ctx.editMessageText(customAmountMessage, { reply_markup: customAmountKeyboard });
+            await ctx.editMessageText(customQuantityMessage, { reply_markup: customQuantityKeyboard });
             await ctx.answerCallbackQuery();
           } else {
-            await ctx.reply(customAmountMessage, { reply_markup: customAmountKeyboard });
+            await ctx.reply(customQuantityMessage, { reply_markup: customQuantityKeyboard });
           }
           break;
         
         case BotSessionStep.AWAITING_WALLET:
-          // Go back to Amount Selection
-          ctx.session.step = BotSessionStep.SELECT_AMOUNT;
+          // Go back to Token Quantity Selection
+          ctx.session.step = BotSessionStep.SELECT_TOKEN_QUANTITY;
           ctx.session.userId = currentUserId; // Preserve userId
           
-          const amountKeyboard = new InlineKeyboard()
-            .text('₦1,000', BotCallbackAmount.AMT_1000)
-            .text('₦2,500', BotCallbackAmount.AMT_2500)
-            .text('₦5,000', BotCallbackAmount.AMT_5000)
-            .row()
-            .text('✍️ Custom Amount', BotCallbackAmount.AMT_CUSTOM)
-            .row()
-            .text('⬅️ Back', BotCallbackAction.ACTION_BACK)
-            .text('🏠 Home', BotCallbackAction.ACTION_HOME);
-          
-          const chainName = ctx.session.selectedChain;
-          const amountMessage = `Select amount for ${chainName}:`;
+          const walletChain = ctx.session.selectedChain;
+          const quantityKeyboard = this.buildTokenQuantityKeyboard(walletChain || '');
+          const walletTokenName = this.getTokenName(walletChain || '');
+          const quantityMessage = `Enter the quantity of ${walletTokenName} you want to receive:`;
           
           if (ctx.callbackQuery) {
-            await ctx.editMessageText(amountMessage, { reply_markup: amountKeyboard });
+            await ctx.editMessageText(quantityMessage, { reply_markup: quantityKeyboard });
             await ctx.answerCallbackQuery();
           } else {
-            await ctx.reply(amountMessage, { reply_markup: amountKeyboard });
+            await ctx.reply(quantityMessage, { reply_markup: quantityKeyboard });
           }
           break;
         
@@ -1964,29 +2125,50 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
   private async handlePayNow(ctx: BotContext) {
     try {
-      const orderId = ctx.session.lastOrderId;
+      const totalNgnToPay = ctx.session.selectedAmountNaira;
+      const selectedChain = ctx.session.selectedChain;
+      const selectedTokenQuantity = ctx.session.selectedTokenQuantity;
+      const targetWalletAddress = ctx.session.targetWalletAddress;
+      const currentUserId = ctx.session.userId;
       
-      if (!orderId) {
+      if (!totalNgnToPay || !selectedChain || !selectedTokenQuantity || !targetWalletAddress || !currentUserId) {
         if (ctx.callbackQuery) {
-          await ctx.answerCallbackQuery({ text: 'No order found. Please start a new order.' });
+          await ctx.answerCallbackQuery({ text: 'Session expired. Please start over.' });
         }
         await this.sendMainMenu(ctx);
         return;
       }
 
-      // Get order details
-      const order = await this.ordersService.findById(orderId);
-      
-      if (!order) {
-        if (ctx.callbackQuery) {
-          await ctx.answerCallbackQuery({ text: 'Order not found. Please start a new order.' });
-        }
-        await this.sendMainMenu(ctx);
-        return;
-      }
+      // Calculate costs
+      const { costNgn: tokenCostNgn, rateNgn: tokenNgnRate } = await this.oracleService.calculateNgnCost(
+        selectedTokenQuantity,
+        selectedChain as any
+      );
+
+      const networkGasFeeUsd = 0.05;
+      const platformFeeUsd = 0.05;
+      const combinedFeeUsd = networkGasFeeUsd + platformFeeUsd;
+      const usdNgnRate = await this.oracleService.getUsdtNgnRate();
+      const combinedFeeNgn = combinedFeeUsd * usdNgnRate;
+
+      // Create the actual order
+      const order = await this.ordersService.createOrder({
+        userId: currentUserId,
+        chain: selectedChain as any,
+        targetWallet: targetWalletAddress,
+        fiatAmountNaira: tokenCostNgn,
+        feeNaira: combinedFeeNgn,
+        totalAmount: totalNgnToPay,
+        cryptoAmount: selectedTokenQuantity,
+        paymentGateway: 'PAYSTACK' as any,
+        status: 'PENDING_PAYMENT' as any,
+      });
+
+      // Update session with real order ID
+      ctx.session.lastOrderId = order.id;
 
       // Initialize Paystack transaction
-      const paymentResult = await this.paymentsService.initializePaystackTransaction(orderId);
+      const paymentResult = await this.paymentsService.initializePaystackTransaction(order.id);
       
       if (!paymentResult.authorizationUrl) {
         if (ctx.callbackQuery) {
@@ -2346,8 +2528,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         `✅ <b>Withdrawal Processed Successfully</b>\n\n` +
         `━━━━━━━━━━━━━━━━━━\n` +
         `💸 <b>Amount:</b> ₦${amount.toLocaleString()}\n` +
-        `📝 <b>Reference:</b> ${result.reference}\n` +
-        `🆔 <b>Transaction ID:</b> ${result.transactionId}\n\n` +
+        `📝 <b>Reference:</b> ${result.reference}\n\n` +
         `━━━━━━━━━━━━━━━━━━\n` +
         `Your withdrawal has been processed via Paystack and will be credited to your bank account within minutes.`;
 

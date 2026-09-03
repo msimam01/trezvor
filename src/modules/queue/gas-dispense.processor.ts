@@ -111,6 +111,10 @@ export class GasDispenseProcessor extends WorkerHost {
         BASE: 'ETH',
         TON: 'TON',
         BSC: 'BNB',
+        USDT_TON: 'USDT',
+        USDT_SOL: 'USDT',
+        USDT_BSC: 'USDT',
+        USDT_BASE: 'USDT',
       }[order.chain] || 'tokens';
 
       // Send Telegram success notification to the user

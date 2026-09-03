@@ -339,7 +339,11 @@ export class AuthController {
       include: {
         orders: true,
         savedBanks: true,
-        walletTransactions: true,
+        wallet: {
+          include: {
+            transactions: true,
+          },
+        },
       },
     });
 
@@ -350,6 +354,7 @@ export class AuthController {
     // Find the web user
     const webUser = await this.prisma.user.findUnique({
       where: { id: userId },
+      include: { wallet: true },
     });
 
     if (!webUser) {
@@ -398,30 +403,43 @@ export class AuthController {
       }
 
       // Transfer wallet transactions from telegram user to web user
-      if (telegramUser.walletTransactions.length > 0) {
+      if (telegramUser.wallet?.transactions && telegramUser.wallet.transactions.length > 0) {
         await prisma.walletTransaction.updateMany({
-          where: { userId: telegramUser.id },
-          data: { userId: webUser.id },
+          where: { walletId: telegramUser.wallet.id },
+          data: { walletId: webUser.wallet?.id || telegramUser.wallet.id },
         });
       }
 
       // Add telegram user's balance to web user using strict numeric arithmetic
-      if (telegramUser.nairaBalance > 0) {
+      if (telegramUser.wallet?.nairaBalance && telegramUser.wallet.nairaBalance > 0) {
         const currentWebUser = await prisma.user.findUnique({
           where: { id: webUser.id },
-          select: { nairaBalance: true }
+          include: { wallet: true },
         });
 
-        const currentBalance = Number(currentWebUser?.nairaBalance || 0);
-        const telegramBalance = Number(telegramUser.nairaBalance);
+        const currentBalance = Number(currentWebUser?.wallet?.nairaBalance || 0);
+        const telegramBalance = Number(telegramUser.wallet.nairaBalance);
         const newBalance = currentBalance + telegramBalance;
 
-        await prisma.user.update({
-          where: { id: webUser.id },
-          data: {
+        // Update or create web user's wallet
+        await prisma.wallet.upsert({
+          where: { userId: webUser.id },
+          create: {
+            userId: webUser.id,
+            nairaBalance: newBalance,
+          },
+          update: {
             nairaBalance: newBalance,
           },
         });
+
+        // Reset telegram user's wallet balance
+        if (telegramUser.wallet) {
+          await prisma.wallet.update({
+            where: { id: telegramUser.wallet.id },
+            data: { nairaBalance: 0 },
+          });
+        }
       }
 
       // Add telegram user's unpaid affiliate balance to web user using strict numeric arithmetic

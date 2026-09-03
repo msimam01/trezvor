@@ -15,6 +15,10 @@ export class OracleService {
     BASE: 'ethereum',
     TON: 'the-open-network',
     BSC: 'binancecoin',
+    USDT_TON: 'tether',
+    USDT_SOL: 'tether',
+    USDT_BSC: 'tether',
+    USDT_BASE: 'tether',
   };
 
   private readonly BINANCE_SYMBOLS = {
@@ -22,6 +26,10 @@ export class OracleService {
     BASE: 'ETHUSDT',
     TON: 'TONUSDT',
     BSC: 'BNBUSDT',
+    USDT_TON: 'USDTUSDT',
+    USDT_SOL: 'USDTUSDT',
+    USDT_BSC: 'USDTUSDT',
+    USDT_BASE: 'USDTUSDT',
   };
 
   // Emergency fallback rates (conservative estimates)
@@ -30,6 +38,10 @@ export class OracleService {
     BASE: 4500000,  // 1 ETH = ₦4,500,000
     TON: 9000,      // 1 TON = ₦9,000
     BSC: 700000,    // 1 BNB = ₦700,000
+    USDT_TON: 1600, // 1 USDT = ₦1,600
+    USDT_SOL: 1600, // 1 USDT = ₦1,600
+    USDT_BSC: 1600, // 1 USDT = ₦1,600
+    USDT_BASE: 1600, // 1 USDT = ₦1,600
   };
 
   // USDT/NGN fallback rate
@@ -208,6 +220,157 @@ export class OracleService {
       const err = error as Error;
       this.logger.error(`Failed to calculate crypto amount: ${err.message}`);
       throw new Error(`Price calculation failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * Calculate NGN cost from token quantity (new token-quantity-first approach)
+   */
+  async calculateNgnCost(
+    tokenQuantity: number,
+    chain: SupportedChain
+  ): Promise<{ costNgn: number; rateNgn: number; rateUsd: number }> {
+    try {
+      const rateNgn = await this.getPriceInNgn(chain);
+      const rateUsd = await this.getPriceInUsd(chain);
+      
+      // Calculate NGN cost
+      const costNgn = Number((tokenQuantity * rateNgn).toFixed(2));
+
+      this.logger.log(
+        `Calculated NGN cost for ${chain}: ${costNgn} (Quantity: ${tokenQuantity}, Rate NGN: ₦${rateNgn}, Rate USD: $${rateUsd})`
+      );
+
+      return {
+        costNgn,
+        rateNgn,
+        rateUsd,
+      };
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Failed to calculate NGN cost: ${err.message}`);
+      throw new Error(`Price calculation failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * Get current price of cryptocurrency in USD
+   */
+  async getPriceInUsd(chain: SupportedChain): Promise<number> {
+    const cacheKey = `oracle:price:usd:${chain}`;
+
+    try {
+      // 1. Redis Cache Check
+      const cachedPrice = await this.redis.get(cacheKey);
+      if (cachedPrice) {
+        this.logger.log(`Using cached USD price for ${chain}: $${cachedPrice}`);
+        return parseFloat(cachedPrice);
+      }
+
+      // 2. Primary Provider: CoinGecko API
+      try {
+        const coinId = this.COINGECKO_IDS[chain];
+        const url = `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`;
+
+        const response = await firstValueFrom(
+          this.httpService.get(url, {
+            timeout: 10000,
+          })
+        );
+
+        const data = response.data;
+
+        if (!data || !data[coinId]?.usd) {
+          throw new Error(`Invalid CoinGecko USD response for ${chain}`);
+        }
+
+        const usdPrice = data[coinId].usd;
+        await this.redis.set(cacheKey, usdPrice.toString(), 'EX', 60);
+        this.logger.log(`CoinGecko USD price for ${chain}: $${usdPrice}`);
+        return usdPrice;
+      } catch (coinGeckoError) {
+        const err = coinGeckoError as Error;
+        this.logger.warn(`CoinGecko USD API failed for ${chain}: ${err.message}`);
+      }
+
+      // 3. Fallback Provider: Binance API
+      try {
+        const symbol = this.BINANCE_SYMBOLS[chain];
+        const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`;
+
+        const response = await firstValueFrom(
+          this.httpService.get(url, {
+            timeout: 10000,
+          })
+        );
+
+        const data = response.data;
+
+        if (!data || !data.price) {
+          throw new Error(`Invalid Binance USD response for ${chain}`);
+        }
+
+        const usdPrice = parseFloat(data.price);
+        await this.redis.set(cacheKey, usdPrice.toString(), 'EX', 60);
+        this.logger.log(`Binance USD price for ${chain}: $${usdPrice}`);
+        return usdPrice;
+      } catch (binanceError) {
+        const err = binanceError as Error;
+        this.logger.warn(`Binance USD API failed for ${chain}: ${err.message}`);
+      }
+
+      // 4. Emergency Fallback for USD
+      const emergencyRateNgn = this.EMERGENCY_RATES[chain];
+      const emergencyRateUsd = emergencyRateNgn / this.USDT_NGN_FALLBACK;
+      this.logger.error(`Emergency fallback USD rate for ${chain}: $${emergencyRateUsd}`);
+      await this.redis.set(cacheKey, emergencyRateUsd.toString(), 'EX', 30);
+      return emergencyRateUsd;
+
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Failed to get USD price for ${chain}: ${err.message}`);
+      // Return emergency rate as last resort
+      const emergencyRateNgn = this.EMERGENCY_RATES[chain];
+      return emergencyRateNgn / this.USDT_NGN_FALLBACK;
+    }
+  }
+
+  /**
+   * Get current USDT/NGN rate
+   */
+  async getUsdtNgnRate(): Promise<number> {
+    const cacheKey = 'oracle:usdt_ngn_rate';
+
+    try {
+      // 1. Redis Cache Check
+      const cachedRate = await this.redis.get(cacheKey);
+      if (cachedRate) {
+        return parseFloat(cachedRate);
+      }
+
+      // 2. Primary Provider: CoinGecko API
+      try {
+        const url = 'https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=ngn';
+        const response = await firstValueFrom(
+          this.httpService.get(url, { timeout: 10000 })
+        );
+
+        if (response.data?.tether?.ngn) {
+          const rate = response.data.tether.ngn;
+          await this.redis.set(cacheKey, rate.toString(), 'EX', 60);
+          return rate;
+        }
+      } catch (coinGeckoError) {
+        this.logger.warn('CoinGecko USDT/NGN rate failed, using fallback');
+      }
+
+      // 3. Fallback
+      await this.redis.set(cacheKey, this.USDT_NGN_FALLBACK.toString(), 'EX', 30);
+      return this.USDT_NGN_FALLBACK;
+
+    } catch (error) {
+      this.logger.error('Failed to get USDT/NGN rate');
+      return this.USDT_NGN_FALLBACK;
     }
   }
 

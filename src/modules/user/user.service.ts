@@ -49,20 +49,32 @@ export class UserService {
     // Get current balance for strict numeric arithmetic
     const currentUser = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { nairaBalance: true }
+      include: { wallet: true }
     });
 
-    const currentBalance = Number(currentUser?.nairaBalance || 0);
+    const currentBalance = Number(currentUser?.wallet?.nairaBalance || 0);
     const numericPayoutAmount = Number(payoutAmount);
     const newBalance = currentBalance + numericPayoutAmount;
 
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        unpaidAffiliateBalance: 0,
-        nairaBalance: newBalance,
-      },
-    });
+    // Update wallet balance and reset affiliate balance
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          unpaidAffiliateBalance: 0,
+        },
+      }),
+      this.prisma.wallet.upsert({
+        where: { userId },
+        create: {
+          userId,
+          nairaBalance: newBalance,
+        },
+        update: {
+          nairaBalance: newBalance,
+        },
+      }),
+    ]);
 
     return {
       success: true,

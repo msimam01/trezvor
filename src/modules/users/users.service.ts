@@ -66,8 +66,12 @@ export class UsersService {
             referredById,
             role: 'USER',
             status: 'active',
-            nairaBalance: 0.0,
             unpaidAffiliateBalance: 0.0,
+            wallet: {
+              create: {
+                nairaBalance: 0.0,
+              },
+            },
           },
         });
         this.logger.log(`Created new user with telegramId: ${telegramId}`);

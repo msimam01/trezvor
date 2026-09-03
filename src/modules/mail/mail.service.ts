@@ -32,6 +32,10 @@ export class MailService {
         BASE: 'ETH',
         TON: 'TON',
         BSC: 'BNB',
+        USDT_TON: 'USDT',
+        USDT_SOL: 'USDT',
+        USDT_BSC: 'USDT',
+        USDT_BASE: 'USDT',
       }[chain] || 'tokens';
 
       const html = `

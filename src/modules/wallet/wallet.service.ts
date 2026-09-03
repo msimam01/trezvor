@@ -232,6 +232,7 @@ export class WalletService {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
         include: {
+          wallet: true,
           savedBanks: {
             select: {
               id: true,
@@ -248,7 +249,8 @@ export class WalletService {
         throw new NotFoundException('User not found');
       }
 
-      const numericBalance = Number(user.nairaBalance);
+      // Get balance from wallet instead of user
+      const numericBalance = Number(user.wallet?.nairaBalance || 0);
       const formattedBalance = this.formatNairaAmount(numericBalance);
 
       return {
@@ -304,8 +306,9 @@ export class WalletService {
         throw new NotFoundException('User not found');
       }
 
-      // Check if user has sufficient balance using strict numeric arithmetic
-      const currentBalance = Number(user.nairaBalance);
+      // Check if user has sufficient balance using wallet
+      const walletData = await this.getWalletBalance(userId);
+      const currentBalance = walletData.nairaBalance;
       const withdrawalAmount = Number(amount);
       
       if (withdrawalAmount > currentBalance) {
@@ -339,23 +342,6 @@ export class WalletService {
       // Generate reference for transaction
       const reference = `WD_${userId}_${Date.now()}`;
 
-      // Create pending wallet transaction
-      const transaction = await this.prisma.walletTransaction.create({
-        data: {
-          userId,
-          amount,
-          type: 'WITHDRAWAL',
-          status: 'PENDING',
-          reference,
-          metadata: {
-            bankAccountId,
-            bankName: savedBank.bankName,
-            accountNumber: savedBank.accountNumber,
-            accountName: savedBank.accountName,
-          },
-        },
-      });
-
       // Convert amount to kobo using strict numeric arithmetic
       const amountInKobo = Math.round(withdrawalAmount * 100);
 
@@ -387,37 +373,12 @@ export class WalletService {
         this.logger.log(`Paystack transfer response: ${JSON.stringify(transferResponse.data)}`);
 
         if (!transferResponse.data.status) {
-          // Update transaction as failed
-          await this.prisma.walletTransaction.update({
-            where: { id: transaction.id },
-            data: {
-              status: 'FAILED',
-              metadata: {
-                ...transaction.metadata as any,
-                paystackError: transferResponse.data.message,
-              },
-            },
-          });
-
           this.logger.error(`Paystack transfer failed: ${transferResponse.data.message}`);
           throw new BadRequestException(`Transfer failed: ${transferResponse.data.message}`);
         }
       } catch (axiosError) {
         const err = axiosError as any;
         this.logger.error(`Paystack API error: ${err.message}`, err.response?.data);
-        
-        // Update transaction as failed
-        await this.prisma.walletTransaction.update({
-          where: { id: transaction.id },
-          data: {
-            status: 'FAILED',
-            metadata: {
-              ...transaction.metadata as any,
-              paystackError: err.response?.data?.message || err.message,
-              paystackErrorDetails: err.response?.data,
-            },
-          },
-        });
 
         // Handle specific Paystack errors
         const errorMessage = err.response?.data?.message || err.response?.data?.error || err.message;
@@ -438,27 +399,14 @@ export class WalletService {
         throw new BadRequestException(`Transfer failed: ${errorMessage}`);
       }
 
-      // Deduct from user balance using strict numeric arithmetic
-      const newBalance = currentBalance - withdrawalAmount;
-      
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          nairaBalance: newBalance,
-        },
-      });
-
-      // Update transaction as successful
-      await this.prisma.walletTransaction.update({
-        where: { id: transaction.id },
-        data: {
-          status: 'SUCCESS',
-          metadata: {
-            ...transaction.metadata as any,
-            transferCode: transferResponse?.data?.data?.transfer_code,
-            transferStatus: transferResponse?.data?.data?.status,
-          },
-        },
+      // Deduct from wallet balance using atomic transaction
+      await this.deductFunds(userId, withdrawalAmount, 'WITHDRAWAL', reference, {
+        bankAccountId,
+        bankName: savedBank.bankName,
+        accountNumber: savedBank.accountNumber,
+        accountName: savedBank.accountName,
+        transferCode: transferResponse?.data?.data?.transfer_code,
+        transferStatus: transferResponse?.data?.data?.status,
       });
 
       this.logger.log(`Withdrawal of ₦${withdrawalAmount} processed for user ${userId}. Reference: ${reference}`);
@@ -466,7 +414,6 @@ export class WalletService {
       return {
         success: true,
         message: 'Withdrawal processed successfully',
-        transactionId: transaction.id,
         reference,
       };
     } catch (error) {
@@ -476,46 +423,112 @@ export class WalletService {
     }
   }
 
-  async addFunds(userId: string, amount: number, type: 'REFERRAL_EARNING' | 'BONUS_DEPOSIT' | 'REFUND' | 'OFFRAMP_PAYOUT', reference: string, metadata?: any): Promise<void> {
+  async addFunds(userId: string, amount: number, type: 'REFERRAL_EARNING' | 'BONUS_DEPOSIT' | 'REFUND' | 'OFFRAMP_PAYOUT' | 'GAS_PURCHASE' | 'DEPOSIT', reference: string, metadata?: any): Promise<void> {
     try {
       // Ensure strict numeric arithmetic
       const numericAmount = Number(amount);
       
-      // Get current user balance for logging
-      const currentUser = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { nairaBalance: true }
+      // Perform atomic transaction using Prisma interactive transaction
+      await this.prisma.$transaction(async (tx) => {
+        // Fetch user's wallet
+        const wallet = await tx.wallet.findUnique({
+          where: { userId },
+        });
+
+        if (!wallet) {
+          throw new NotFoundException('Wallet not found for user');
+        }
+
+        const balanceBefore = Number(wallet.nairaBalance);
+        const balanceAfter = balanceBefore + numericAmount;
+
+        this.logger.log(`Adding funds to user ${userId}: ${balanceBefore} + ${numericAmount} = ${balanceAfter}`);
+
+        // Atomically update wallet balance
+        await tx.wallet.update({
+          where: { userId },
+          data: {
+            nairaBalance: balanceAfter,
+          },
+        });
+
+        // Create wallet transaction with balance tracking
+        await tx.walletTransaction.create({
+          data: {
+            walletId: wallet.id,
+            amount: numericAmount,
+            type,
+            status: 'SUCCESS',
+            balanceBefore,
+            balanceAfter,
+            reference,
+            metadata,
+          },
+        });
       });
 
-      const currentBalance = Number(currentUser?.nairaBalance || 0);
-      const newBalance = currentBalance + numericAmount;
-
-      this.logger.log(`Adding funds to user ${userId}: ${currentBalance} + ${numericAmount} = ${newBalance}`);
-
-      // Add to user balance using strict numeric arithmetic
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          nairaBalance: newBalance,
-        },
-      });
-
-      // Create wallet transaction
-      await this.prisma.walletTransaction.create({
-        data: {
-          userId,
-          amount: numericAmount,
-          type,
-          status: 'SUCCESS',
-          reference,
-          metadata,
-        },
-      });
-
-      this.logger.log(`Added ${numericAmount} NGN to user ${userId} wallet (type: ${type}). New balance: ${newBalance}`);
+      this.logger.log(`Added ${numericAmount} NGN to user ${userId} wallet (type: ${type})`);
     } catch (error) {
       const err = error as Error;
       this.logger.error(`Error adding funds: ${err.message}`, err.stack);
+      throw err;
+    }
+  }
+
+  async deductFunds(userId: string, amount: number, type: 'WITHDRAWAL' | 'GAS_PURCHASE' | 'OFFRAMP_PAYOUT', reference: string, metadata?: any): Promise<void> {
+    try {
+      // Ensure strict numeric arithmetic
+      const numericAmount = Number(amount);
+      
+      // Perform atomic transaction using Prisma interactive transaction
+      await this.prisma.$transaction(async (tx) => {
+        // Fetch user's wallet
+        const wallet = await tx.wallet.findUnique({
+          where: { userId },
+        });
+
+        if (!wallet) {
+          throw new NotFoundException('Wallet not found for user');
+        }
+
+        const balanceBefore = Number(wallet.nairaBalance);
+
+        // Check if sufficient balance
+        if (balanceBefore < numericAmount) {
+          throw new BadRequestException(`Insufficient balance. Current balance: ₦${balanceBefore.toLocaleString()}, Required: ₦${numericAmount.toLocaleString()}`);
+        }
+
+        const balanceAfter = balanceBefore - numericAmount;
+
+        this.logger.log(`Deducting funds from user ${userId}: ${balanceBefore} - ${numericAmount} = ${balanceAfter}`);
+
+        // Atomically update wallet balance
+        await tx.wallet.update({
+          where: { userId },
+          data: {
+            nairaBalance: balanceAfter,
+          },
+        });
+
+        // Create wallet transaction with balance tracking
+        await tx.walletTransaction.create({
+          data: {
+            walletId: wallet.id,
+            amount: -numericAmount, // Store as negative for deductions
+            type,
+            status: 'SUCCESS',
+            balanceBefore,
+            balanceAfter,
+            reference,
+            metadata,
+          },
+        });
+      });
+
+      this.logger.log(`Deducted ${numericAmount} NGN from user ${userId} wallet (type: ${type})`);
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`Error deducting funds: ${err.message}`, err.stack);
       throw err;
     }
   }

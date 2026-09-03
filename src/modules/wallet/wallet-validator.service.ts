@@ -3,7 +3,7 @@ import { isAddress } from 'ethers';
 import { PublicKey } from '@solana/web3.js';
 import { Address } from '@ton/core';
 
-export type ChainType = 'SOLANA' | 'TON' | 'BASE' | 'BSC';
+export type ChainType = 'SOLANA' | 'TON' | 'BASE' | 'BSC' | 'USDT_TON' | 'USDT_SOL' | 'USDT_BSC' | 'USDT_BASE';
 
 @Injectable()
 export class WalletValidatorService {
@@ -24,12 +24,16 @@ export class WalletValidatorService {
       switch (chain) {
         case 'BASE':
         case 'BSC':
+        case 'USDT_BASE':
+        case 'USDT_BSC':
           return this.validateEVMAddress(trimmedAddress);
         
         case 'SOLANA':
+        case 'USDT_SOL':
           return this.validateSolanaAddress(trimmedAddress);
         
         case 'TON':
+        case 'USDT_TON':
           return this.validateTonAddress(trimmedAddress);
         
         default:
@@ -84,11 +88,15 @@ export class WalletValidatorService {
   getValidationErrorMessage(chain: ChainType): string {
     switch (chain) {
       case 'SOLANA':
+      case 'USDT_SOL':
         return 'Solana addresses must be valid Base58 addresses on the Ed25519 curve.';
       case 'BASE':
       case 'BSC':
+      case 'USDT_BASE':
+      case 'USDT_BSC':
         return 'EVM addresses must start with 0x followed by 40 hexadecimal characters.';
       case 'TON':
+      case 'USDT_TON':
         return 'TON addresses must be valid user-friendly addresses (EQ/UQ/0: prefix) or 48-character addresses.';
       default:
         return 'Please provide a valid wallet address.';

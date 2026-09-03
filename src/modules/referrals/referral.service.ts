@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
+import { WalletService } from '../wallet/wallet.service';
 
 export interface ReferralStats {
   referralCode: string;
@@ -34,6 +35,7 @@ export class ReferralService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly walletService: WalletService,
   ) {
     this.defaultBonusAmount = this.configService.get<number>('REFERRAL_BONUS_AMOUNT') || 200.0;
   }
@@ -43,7 +45,11 @@ export class ReferralService {
       where: { id: userId },
       include: {
         referralRecordsGiven: true,
-        walletTransactions: true,
+        wallet: {
+          include: {
+            transactions: true,
+          },
+        },
       },
     });
 
@@ -55,17 +61,17 @@ export class ReferralService {
     const totalReferred = referralRecords.length;
 
     // Total Earned: Sum of all REFERRAL_EARNING wallet transactions for this user
-    const totalEarned = user.walletTransactions
+    const totalEarned = user.wallet?.transactions
       .filter((transaction) => transaction.type === 'REFERRAL_EARNING' && transaction.status === 'SUCCESS')
-      .reduce((sum, transaction) => sum + Number(transaction.amount), 0);
+      .reduce((sum, transaction) => sum + Number(transaction.amount), 0) || 0;
 
-    // Withdrawable Balance: Current user.nairaBalance
-    const withdrawableBalance = Number(user.nairaBalance);
+    // Withdrawable Balance: Current wallet nairaBalance
+    const withdrawableBalance = Number(user.wallet?.nairaBalance || 0);
 
     // Total Paid Out: Sum of all completed bank withdrawal transactions
-    const totalPaidOut = user.walletTransactions
+    const totalPaidOut = user.wallet?.transactions
       .filter((transaction) => transaction.type === 'WITHDRAWAL' && transaction.status === 'SUCCESS')
-      .reduce((sum, transaction) => sum + Number(transaction.amount), 0);
+      .reduce((sum, transaction) => sum + Number(transaction.amount), 0) || 0;
 
     const botUsername = this.configService.get<string>('TELEGRAM_BOT_USERNAME') || 'trezvor_bot';
     const referralLink = `https://t.me/${botUsername}?start=${user.referralCode}`;
@@ -175,49 +181,33 @@ export class ReferralService {
     }
 
     try {
-      // Start transaction to update all records atomically
-      await this.prisma.$transaction(async (prisma) => {
-        // Mark referee as completed first deposit
-        await prisma.user.update({
-          where: { id: refereeId },
-          data: { hasCompletedFirstDeposit: true },
-        });
-
-        // Update referral record status
-        await prisma.referralRecord.update({
-          where: { id: referralRecord.id },
-          data: {
-            status: 'REWARDED',
-            rewardedAt: new Date(),
-          },
-        });
-
-        // Credit referrer's unpaid affiliate balance
-        await prisma.user.update({
-          where: { id: referrer.id },
-          data: {
-            unpaidAffiliateBalance: {
-              increment: referralRecord.bonusAmount,
-            },
-          },
-        });
-
-        // Create wallet transaction record
-        await prisma.walletTransaction.create({
-          data: {
-            userId: referrer.id,
-            amount: referralRecord.bonusAmount,
-            type: 'REFERRAL_EARNING',
-            status: 'SUCCESS',
-            reference: `REF-BONUS-${refereeId}-${Date.now()}`,
-            metadata: {
-              refereeId,
-              refereeName: referee.firstName || referee.username || 'User',
-              depositAmount,
-            },
-          },
-        });
+      // Mark referee as completed first deposit
+      await this.prisma.user.update({
+        where: { id: refereeId },
+        data: { hasCompletedFirstDeposit: true },
       });
+
+      // Update referral record status
+      await this.prisma.referralRecord.update({
+        where: { id: referralRecord.id },
+        data: {
+          status: 'REWARDED',
+          rewardedAt: new Date(),
+        },
+      });
+
+      // Use WalletService for atomic balance update
+      await this.walletService.addFunds(
+        referrer.id,
+        referralRecord.bonusAmount,
+        'REFERRAL_EARNING',
+        `REF-BONUS-${refereeId}-${Date.now()}`,
+        {
+          refereeId,
+          refereeName: referee.firstName || referee.username || 'User',
+          depositAmount,
+        },
+      );
 
       this.logger.log(
         `Successfully processed referral bonus: ₦${referralRecord.bonusAmount} for referrer ${referrer.id} from referee ${refereeId}`,
@@ -323,59 +313,36 @@ export class ReferralService {
         `Calculated commission: ₦${commissionAmount} (platform fee: ₦${platformFeeNgn} * ${commissionRate}%) for referrer ${referrer.id}`,
       );
 
-      // Start transaction to update records atomically
-      await this.prisma.$transaction(async (prisma) => {
-        // Get current referrer balance for strict numeric arithmetic
-        const currentReferrer = await prisma.user.findUnique({
-          where: { id: referrer.id },
-          select: { nairaBalance: true }
-        });
+      // Use WalletService for atomic balance update
+      await this.walletService.addFunds(
+        referrer.id,
+        commissionAmount,
+        'REFERRAL_EARNING',
+        `REF-COMMISSION-${orderId}-${Date.now()}`,
+        {
+          orderId,
+          refereeId: order.userId,
+          refereeName: order.user.firstName || order.user.username || 'User',
+          platformFeeNgn,
+          commissionRate,
+        },
+      );
 
-        const currentBalance = Number(currentReferrer?.nairaBalance || 0);
-        const newBalance = currentBalance + commissionAmount;
-
-        // Credit referrer's nairaBalance (direct balance, not unpaid affiliate balance)
-        await prisma.user.update({
-          where: { id: referrer.id },
-          data: {
-            nairaBalance: newBalance,
-          },
-        });
-
-        // Create wallet transaction record
-        await prisma.walletTransaction.create({
-          data: {
-            userId: referrer.id,
-            amount: commissionAmount,
-            type: 'REFERRAL_EARNING',
-            status: 'SUCCESS',
-            reference: `REF-COMMISSION-${orderId}-${Date.now()}`,
-            metadata: {
-              orderId,
-              refereeId: order.userId,
-              refereeName: order.user.firstName || order.user.username || 'User',
-              platformFeeNgn,
-              commissionRate,
-            },
-          },
-        });
-
-        // Update referral record with commission details
-        const referralRecord = await prisma.referralRecord.findUnique({
-          where: { refereeId: order.userId },
-        });
-
-        if (referralRecord) {
-          await prisma.referralRecord.update({
-            where: { id: referralRecord.id },
-            data: {
-              bonusAmount: commissionAmount,
-              status: 'REWARDED',
-              rewardedAt: new Date(),
-            },
-          });
-        }
+      // Update referral record with commission details
+      const referralRecord = await this.prisma.referralRecord.findUnique({
+        where: { refereeId: order.userId },
       });
+
+      if (referralRecord) {
+        await this.prisma.referralRecord.update({
+          where: { id: referralRecord.id },
+          data: {
+            bonusAmount: commissionAmount,
+            status: 'REWARDED',
+            rewardedAt: new Date(),
+          },
+        });
+      }
 
       this.logger.log(
         `Successfully processed transaction commission: ₦${commissionAmount} for referrer ${referrer.id} from order ${orderId}`,

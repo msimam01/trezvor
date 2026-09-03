@@ -17,6 +17,11 @@ export enum BotCallbackChain {
   CHAIN_BASE = 'CHAIN_BASE',
   CHAIN_TON = 'CHAIN_TON',
   CHAIN_BSC = 'CHAIN_BSC',
+  CHAIN_USDT = 'CHAIN_USDT',
+  CHAIN_USDT_TON = 'CHAIN_USDT_TON',
+  CHAIN_USDT_SOL = 'CHAIN_USDT_SOL',
+  CHAIN_USDT_BSC = 'CHAIN_USDT_BSC',
+  CHAIN_USDT_BASE = 'CHAIN_USDT_BASE',
 }
 
 export enum BotCallbackAmount {
@@ -24,6 +29,25 @@ export enum BotCallbackAmount {
   AMT_2500 = 'AMT_2500',
   AMT_5000 = 'AMT_5000',
   AMT_CUSTOM = 'AMT_CUSTOM',
+}
+
+export enum BotCallbackQuantity {
+  QTY_SOL_005 = 'QTY_SOL_005',
+  QTY_SOL_01 = 'QTY_SOL_01',
+  QTY_SOL_05 = 'QTY_SOL_05',
+  QTY_SOL_1 = 'QTY_SOL_1',
+  QTY_TON_1 = 'QTY_TON_1',
+  QTY_TON_5 = 'QTY_TON_5',
+  QTY_TON_10 = 'QTY_TON_10',
+  QTY_TON_20 = 'QTY_TON_20',
+  QTY_ETH_001 = 'QTY_ETH_001',
+  QTY_ETH_005 = 'QTY_ETH_005',
+  QTY_ETH_01 = 'QTY_ETH_01',
+  QTY_USDT_5 = 'QTY_USDT_5',
+  QTY_USDT_10 = 'QTY_USDT_10',
+  QTY_USDT_25 = 'QTY_USDT_25',
+  QTY_USDT_50 = 'QTY_USDT_50',
+  QTY_CUSTOM = 'QTY_CUSTOM',
 }
 
 export enum BotCallbackCryptoAsset {
@@ -58,6 +82,8 @@ export enum BotSessionStep {
   AWAITING_WITHDRAWAL_AMOUNT = 'AWAITING_WITHDRAWAL_AMOUNT',
   AWAITING_WITHDRAWAL_BANK = 'AWAITING_WITHDRAWAL_BANK',
   AWAITING_WITHDRAWAL_CONFIRMATION = 'AWAITING_WITHDRAWAL_CONFIRMATION',
+  SELECT_TOKEN_QUANTITY = 'SELECT_TOKEN_QUANTITY',
+  AWAITING_CUSTOM_QUANTITY = 'AWAITING_CUSTOM_QUANTITY',
 }
 
 export const AMOUNT_NAIRA_MAP: Partial<Record<BotCallbackAmount, number>> = {
@@ -71,4 +97,9 @@ export const CHAIN_DISPLAY_NAMES: Record<BotCallbackChain, string> = {
   [BotCallbackChain.CHAIN_BASE]: 'Base (ETH)',
   [BotCallbackChain.CHAIN_TON]: 'TON (TON)',
   [BotCallbackChain.CHAIN_BSC]: 'BSC (BNB)',
+  [BotCallbackChain.CHAIN_USDT]: 'USDT',
+  [BotCallbackChain.CHAIN_USDT_TON]: 'USDT (TON)',
+  [BotCallbackChain.CHAIN_USDT_SOL]: 'USDT (SOL)',
+  [BotCallbackChain.CHAIN_USDT_BSC]: 'USDT (BSC)',
+  [BotCallbackChain.CHAIN_USDT_BASE]: 'USDT (BASE)',
 };

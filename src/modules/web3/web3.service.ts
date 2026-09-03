@@ -406,6 +406,10 @@ export class Web3Service {
         BASE: 'ETH',
         TON: 'TON',
         BSC: 'BNB',
+        USDT_TON: 'USDT',
+        USDT_SOL: 'USDT',
+        USDT_BSC: 'USDT',
+        USDT_BASE: 'USDT',
       }[chain] || 'tokens';
 
       this.logger.warn(
@@ -437,6 +441,18 @@ export class Web3Service {
       case 'BSC':
         txHash = await this.transferBsc(targetWallet, cryptoAmount);
         break;
+      case 'USDT_SOL':
+        txHash = await this.transferSolanaUsdt(targetWallet, cryptoAmount);
+        break;
+      case 'USDT_BASE':
+        txHash = await this.transferBaseUsdt(targetWallet, cryptoAmount);
+        break;
+      case 'USDT_TON':
+        txHash = await this.transferTonUsdt(targetWallet, cryptoAmount);
+        break;
+      case 'USDT_BSC':
+        txHash = await this.transferBscUsdt(targetWallet, cryptoAmount);
+        break;
       default:
         throw new Error(`Unsupported chain: ${chain}`);
     }
@@ -447,5 +463,25 @@ export class Web3Service {
       txHash,
       explorerUrl,
     };
+  }
+
+  /**
+   * USDT Transfer Engines (to be implemented)
+   * Currently throw errors as they require token-specific contract interactions
+   */
+  private async transferSolanaUsdt(targetWallet: string, amount: number): Promise<string> {
+    throw new Error('USDT SOL transfers not yet implemented. Please configure SPL token contract.');
+  }
+
+  private async transferBaseUsdt(targetWallet: string, amount: number): Promise<string> {
+    throw new Error('USDT BASE transfers not yet implemented. Please configure ERC20 token contract.');
+  }
+
+  private async transferTonUsdt(targetWallet: string, amount: number): Promise<string> {
+    throw new Error('USDT TON transfers not yet implemented. Please configure Jetton token contract.');
+  }
+
+  private async transferBscUsdt(targetWallet: string, amount: number): Promise<string> {
+    throw new Error('USDT BSC transfers not yet implemented. Please configure BEP20 token contract.');
   }
 }
