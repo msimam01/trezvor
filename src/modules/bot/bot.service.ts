@@ -926,20 +926,19 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       // Store the wallet address in session
       ctx.session.targetWalletAddress = normalizedAddress;
 
-      // Calculate costs using new token-quantity-first approach
-      const { costNgn: tokenCostNgn, rateNgn: tokenNgnRate, rateUsd: tokenUsdRate } = await this.oracleService.calculateNgnCost(
+      // Calculate costs using new token-quantity-first approach with dynamic fees
+      const { costNgn: tokenCostNgn, rateNgn: tokenNgnRate, rateUsd: tokenUsdRate, feeNgn, totalCostNgn } = await this.oracleService.calculateNgnCost(
         tokenQuantity,
         chain as any
       );
 
-      // Calculate fees
-      const networkGasFeeUsd = 0.05; // $0.05 network gas fee
-      const platformFeeUsd = 0.05; // $0.05 platform fee
-      const combinedFeeUsd = networkGasFeeUsd + platformFeeUsd; // $0.10 total fee
+      // Use the fee calculation from OracleService (now includes dynamic gas estimation + platform fee)
+      const combinedFeeNgn = feeNgn;
+      const totalNgnToPay = totalCostNgn;
       
+      // Calculate USD equivalent of fee for display
       const usdNgnRate = await this.oracleService.getUsdtNgnRate();
-      const combinedFeeNgn = combinedFeeUsd * usdNgnRate;
-      const totalNgnToPay = tokenCostNgn + combinedFeeNgn;
+      const combinedFeeUsd = combinedFeeNgn / usdNgnRate;
 
       // Store calculated values for order creation
       ctx.session.selectedAmountNaira = totalNgnToPay;
@@ -2125,13 +2124,12 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
   private async handlePayNow(ctx: BotContext) {
     try {
-      const totalNgnToPay = ctx.session.selectedAmountNaira;
       const selectedChain = ctx.session.selectedChain;
       const selectedTokenQuantity = ctx.session.selectedTokenQuantity;
       const targetWalletAddress = ctx.session.targetWalletAddress;
       const currentUserId = ctx.session.userId;
       
-      if (!totalNgnToPay || !selectedChain || !selectedTokenQuantity || !targetWalletAddress || !currentUserId) {
+      if (!selectedChain || !selectedTokenQuantity || !targetWalletAddress || !currentUserId) {
         if (ctx.callbackQuery) {
           await ctx.answerCallbackQuery({ text: 'Session expired. Please start over.' });
         }
@@ -2139,17 +2137,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      // Calculate costs
-      const { costNgn: tokenCostNgn, rateNgn: tokenNgnRate } = await this.oracleService.calculateNgnCost(
+      // Calculate costs with dynamic fees
+      const { costNgn: tokenCostNgn, rateNgn: tokenNgnRate, feeNgn, totalCostNgn } = await this.oracleService.calculateNgnCost(
         selectedTokenQuantity,
         selectedChain as any
       );
 
-      const networkGasFeeUsd = 0.05;
-      const platformFeeUsd = 0.05;
-      const combinedFeeUsd = networkGasFeeUsd + platformFeeUsd;
-      const usdNgnRate = await this.oracleService.getUsdtNgnRate();
-      const combinedFeeNgn = combinedFeeUsd * usdNgnRate;
+      // Use the dynamic fee calculation from OracleService
+      const combinedFeeNgn = feeNgn;
+      const totalNgnToPay = totalCostNgn;
 
       // Create the actual order
       const order = await this.ordersService.createOrder({

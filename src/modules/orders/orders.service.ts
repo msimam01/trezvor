@@ -77,14 +77,14 @@ export class OrdersService {
       // Fee is calculated internally and deducted from crypto calculation
       const actualTotalAmount = fiatAmountNaira;
       
-      // Calculate fee if not provided (5% capped at ₦200)
-      const actualFeeNaira = feeNaira || Math.min(fiatAmountNaira * 0.05, 200);
-      
-      // Calculate crypto amount using Oracle service (fee is deducted internally)
-      const { cryptoAmount } = await this.oracleService.calculateCryptoAmount(
+      // Calculate crypto amount using Oracle service (fee is calculated internally now)
+      const { cryptoAmount, feeNgn: calculatedFeeNgn } = await this.oracleService.calculateCryptoAmount(
         fiatAmountNaira,
         chain
       );
+      
+      // Use the calculated fee from Oracle if no explicit fee was provided, otherwise use provided fee
+      const actualFeeNaira = feeNaira || calculatedFeeNgn;
 
       const order = await this.prisma.order.create({
         data: {

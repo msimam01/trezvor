@@ -1,9 +1,10 @@
-import { Injectable, Logger, Inject } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { SupportedChain } from '@prisma/client';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
+import { FeeService } from '../fee/fee.service';
 
 @Injectable()
 export class OracleService {
@@ -50,6 +51,7 @@ export class OracleService {
   constructor(
     private readonly httpService: HttpService,
     private readonly configService: ConfigService,
+    @Optional() private readonly feeService?: FeeService,
   ) {
     // Initialize Redis connection
     this.redis = new Redis({
@@ -188,67 +190,137 @@ export class OracleService {
   }
 
   /**
-   * Calculate crypto amount from NGN amount with fee markup
-   * Fee structure: 5% fee, hard capped at ₦200 max
+   * Calculate crypto amount from NGN amount with dynamic fee markup
+   * Uses FeeService for dynamic fee calculation based on admin settings and gas estimation
    */
   async calculateCryptoAmount(
     amountNgn: number,
     chain: SupportedChain
-  ): Promise<{ cryptoAmount: number; rateNgn: number }> {
+  ): Promise<{ cryptoAmount: number; rateNgn: number; feeNgn: number }> {
     try {
-      const rateNgn = await this.getPriceInNgn(chain);
+      this.logger.log(`[OracleService] Starting crypto amount calculation for ${chain}, amount: ₦${amountNgn}`);
       
-      // Calculate fee: 5% fee, hard capped at ₦200 max
-      const feeNgn = Math.min(amountNgn * 0.05, 200);
+      const rateNgn = await this.getPriceInNgn(chain);
+      this.logger.log(`[OracleService] Got ${chain} rate: ₦${rateNgn}`);
+      
+      // Convert NGN amount to USD for fee calculation
+      const usdtNgnRate = await this.getUsdtNgnRate();
+      const amountUsd = amountNgn / usdtNgnRate;
+      this.logger.log(`[OracleService] Converted ₦${amountNgn} to $${amountUsd.toFixed(2)} using USDT/NGN rate: ${usdtNgnRate}`);
+      
+      // Calculate fee using FeeService if available, otherwise use fallback
+      let feeUsd: number;
+      if (this.feeService) {
+        this.logger.log(`[OracleService] Using FeeService for dynamic fee calculation...`);
+        const tokenSymbol = this.getTokenSymbol(chain);
+        const feeResult = await this.feeService.calculateOrderFee(chain, tokenSymbol, amountUsd);
+        feeUsd = feeResult.totalFeeUsd;
+        this.logger.log(`[OracleService] ✓ FeeService returned total fee: $${feeUsd.toFixed(6)} for ${chain}`);
+      } else {
+        // Fallback to 5% fee capped at ₦200
+        this.logger.log(`[OracleService] ⚠ FeeService not available, using fallback fee calculation (5% capped at ₦200)`);
+        feeUsd = Math.min((amountNgn * 0.05) / usdtNgnRate, 200 / usdtNgnRate);
+        this.logger.log(`[OracleService] ✓ Fallback fee calculated: $${feeUsd.toFixed(6)} for ${chain}`);
+      }
+      
+      // Convert fee back to NGN
+      const feeNgn = feeUsd * usdtNgnRate;
+      this.logger.log(`[OracleService] Converted fee $${feeUsd.toFixed(6)} to ₦${feeNgn.toFixed(2)}`);
       
       // Calculate net amount after fee
       const netAmountNgn = amountNgn - feeNgn;
+      this.logger.log(`[OracleService] Net amount after fee: ₦${netAmountNgn.toFixed(2)} (₦${amountNgn} - ₦${feeNgn.toFixed(2)})`);
       
       // Calculate crypto amount
       const cryptoAmount = Number((netAmountNgn / rateNgn).toFixed(6));
+      this.logger.log(`[OracleService] ✓ Final crypto amount: ${cryptoAmount} ${chain} (₦${netAmountNgn.toFixed(2)} / ₦${rateNgn})`);
 
-      this.logger.log(
-        `Calculated ${chain} amount: ${cryptoAmount} (Rate: ₦${rateNgn}, Net: ₦${netAmountNgn}, Fee: ₦${feeNgn})`
-      );
-
-      // Only return cryptoAmount and rateNgn (fee breakdown not exposed to UI)
       return {
         cryptoAmount,
         rateNgn,
+        feeNgn,
       };
     } catch (error) {
       const err = error as Error;
-      this.logger.error(`Failed to calculate crypto amount: ${err.message}`);
+      this.logger.error(`[OracleService] ✗ Failed to calculate crypto amount: ${err.message}`);
       throw new Error(`Price calculation failed: ${err.message}`);
     }
   }
 
   /**
+   * Get token symbol for fee calculation
+   */
+  private getTokenSymbol(chain: SupportedChain): string {
+    const symbolMap: Record<SupportedChain, string> = {
+      SOLANA: 'SOL',
+      BASE: 'ETH',
+      TON: 'TON',
+      BSC: 'BNB',
+      USDT_TON: 'USDT',
+      USDT_SOL: 'USDT',
+      USDT_BSC: 'USDT',
+      USDT_BASE: 'USDT',
+    };
+    return symbolMap[chain] || 'TOKEN';
+  }
+
+  /**
    * Calculate NGN cost from token quantity (new token-quantity-first approach)
+   * Now includes dynamic fee calculation using FeeService
    */
   async calculateNgnCost(
     tokenQuantity: number,
     chain: SupportedChain
-  ): Promise<{ costNgn: number; rateNgn: number; rateUsd: number }> {
+  ): Promise<{ costNgn: number; rateNgn: number; rateUsd: number; feeNgn: number; totalCostNgn: number }> {
     try {
+      this.logger.log(`[OracleService] Starting NGN cost calculation for ${chain}, quantity: ${tokenQuantity}`);
+      
       const rateNgn = await this.getPriceInNgn(chain);
       const rateUsd = await this.getPriceInUsd(chain);
+      this.logger.log(`[OracleService] Got ${chain} rates: ₦${rateNgn}, $${rateUsd}`);
       
-      // Calculate NGN cost
-      const costNgn = Number((tokenQuantity * rateNgn).toFixed(2));
-
-      this.logger.log(
-        `Calculated NGN cost for ${chain}: ${costNgn} (Quantity: ${tokenQuantity}, Rate NGN: ₦${rateNgn}, Rate USD: $${rateUsd})`
-      );
+      // Calculate base NGN cost (without fees)
+      const baseCostNgn = Number((tokenQuantity * rateNgn).toFixed(2));
+      this.logger.log(`[OracleService] Base cost (without fees): ₦${baseCostNgn}`);
+      
+      // Convert to USD for fee calculation
+      const amountUsd = tokenQuantity * rateUsd;
+      this.logger.log(`[OracleService] Token quantity in USD: $${amountUsd.toFixed(2)}`);
+      
+      // Calculate fee using FeeService if available, otherwise use fallback
+      let feeUsd: number;
+      if (this.feeService) {
+        this.logger.log(`[OracleService] Using FeeService for dynamic fee calculation...`);
+        const tokenSymbol = this.getTokenSymbol(chain);
+        const feeResult = await this.feeService.calculateOrderFee(chain, tokenSymbol, amountUsd);
+        feeUsd = feeResult.totalFeeUsd;
+        this.logger.log(`[OracleService] ✓ FeeService returned total fee: $${feeUsd.toFixed(6)} for ${chain}`);
+      } else {
+        // Fallback to 5% fee
+        this.logger.log(`[OracleService] ⚠ FeeService not available, using fallback fee calculation (5%)`);
+        feeUsd = amountUsd * 0.05;
+        this.logger.log(`[OracleService] ✓ Fallback fee calculated: $${feeUsd.toFixed(6)} for ${chain}`);
+      }
+      
+      // Convert fee to NGN
+      const usdtNgnRate = await this.getUsdtNgnRate();
+      const feeNgn = feeUsd * usdtNgnRate;
+      this.logger.log(`[OracleService] Converted fee $${feeUsd.toFixed(6)} to ₦${feeNgn.toFixed(2)} using USDT/NGN rate: ${usdtNgnRate}`);
+      
+      // Calculate total cost with fees
+      const totalCostNgn = baseCostNgn + feeNgn;
+      this.logger.log(`[OracleService] ✓ Total cost with fees: ₦${totalCostNgn.toFixed(2)} (Base: ₦${baseCostNgn} + Fee: ₦${feeNgn.toFixed(2)})`);
 
       return {
-        costNgn,
+        costNgn: baseCostNgn,
         rateNgn,
         rateUsd,
+        feeNgn,
+        totalCostNgn,
       };
     } catch (error) {
       const err = error as Error;
-      this.logger.error(`Failed to calculate NGN cost: ${err.message}`);
+      this.logger.error(`[OracleService] ✗ Failed to calculate NGN cost: ${err.message}`);
       throw new Error(`Price calculation failed: ${err.message}`);
     }
   }

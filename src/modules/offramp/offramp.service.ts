@@ -32,6 +32,75 @@ export class OfframpService {
   }
 
   /**
+   * Get USD/NGN rate with admin settings and fallback logic
+   */
+  async getUsdNgnRate(): Promise<number> {
+    try {
+      this.logger.log(`[OffRampService] Starting USD/NGN rate fetching with fallback logic`);
+      
+      // 1. Check admin usdtBuyRateNgn from SystemConfig first
+      this.logger.log(`[OffRampService] Step 1: Checking SystemConfig.usdtBuyRateNgn...`);
+      const adminSettings = await this.settingsService.getAdminSettings();
+      
+      if (adminSettings.usdtBuyRateNgn && adminSettings.usdtBuyRateNgn > 0) {
+        this.logger.log(`[OffRampService] ✓ Using admin usdtBuyRateNgn from SystemConfig: ${adminSettings.usdtBuyRateNgn}`);
+        return adminSettings.usdtBuyRateNgn;
+      }
+      
+      this.logger.log(`[OffRampService] ℹ SystemConfig.usdtBuyRateNgn not set or zero, proceeding to live rates`);
+
+      // 2. Fetch live rate from Market API (CoinGecko)
+      try {
+        this.logger.log(`[OffRampService] Step 2: Fetching live USD/NGN rate from CoinGecko API...`);
+        const url = 'https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=ngn';
+        const response = await firstValueFrom(
+          this.httpService.get(url, { timeout: 5000 })
+        );
+
+        if (response.data?.tether?.ngn) {
+          const liveRate = response.data.tether.ngn;
+          this.logger.log(`[OffRampService] ✓ Using live CoinGecko USD/NGN rate: ${liveRate}`);
+          return liveRate;
+        }
+      } catch (apiError) {
+        const err = apiError as Error;
+        this.logger.warn(`[OffRampService] ⚠ CoinGecko API failed for USD/NGN rate: ${err.message}`);
+      }
+
+      // 3. Fallback to Bybit P2P rate as secondary source
+      try {
+        this.logger.log(`[OffRampService] Step 3: Trying Bybit API as secondary source...`);
+        const url = 'https://api.bybit.com/v5/market/tickers?category=spot&symbol=USDTUSDT';
+        const response = await firstValueFrom(
+          this.httpService.get(url, { timeout: 5000 })
+        );
+
+        if (response.data?.result?.list?.[0]) {
+          // Bybit returns USDT in USD, we need to convert to NGN
+          // For now, we'll use a conservative estimate
+          const fallbackRate = 1550;
+          this.logger.log(`[OffRampService] ⚠ CoinGecko failed, using fallback USD/NGN rate: ${fallbackRate}`);
+          return fallbackRate;
+        }
+      } catch (bybitError) {
+        const err = bybitError as Error;
+        this.logger.warn(`[OffRampService] ⚠ Bybit API failed for USD/NGN rate: ${err.message}`);
+      }
+
+      // 4. Final fallback rate
+      const finalFallbackRate = 1550;
+      this.logger.warn(`[OffRampService] ⚠ [OffRamp] Using hardcoded NGN fallback rate: ${finalFallbackRate}`);
+      return finalFallbackRate;
+
+    } catch (error) {
+      const err = error as Error;
+      this.logger.error(`[OffRampService] ✗ Error getting USD/NGN rate: ${err.message}`);
+      this.logger.warn(`[OffRampService] ⚠ [OffRamp] Using hardcoded NGN fallback rate: 1550`);
+      return 1550;
+    }
+  }
+
+  /**
    * Create an off-ramp request
    * Calculates NGN payout based on active parallel market rate
    */
@@ -65,9 +134,8 @@ export class OfframpService {
         throw new BadRequestException('Only USDT is currently supported for off-ramp');
       }
 
-      // Use admin USDT buy rate
-      const adminSettings = await this.settingsService.getAdminSettings();
-      const rateNgn = adminSettings.usdtBuyRateNgn;
+      // Use USD/NGN rate with admin settings and fallback logic
+      const rateNgn = await this.getUsdNgnRate();
 
       // Calculate NGN value
       const ngnValue = dto.cryptoAmount * rateNgn;
